@@ -145,6 +145,55 @@ export const buildCallRoster = async (participantes, selfJid, sock, log = () => 
     });
 };
 /**
+ * Decide se a captura pode ser alimentada com áudio.
+ *
+ * ## Por que existe
+ *
+ * Medido no log do dono: o motor emite `call_result=4` /
+ * `call_setup_error_type=1` / `is_group_call_created_on_server=false` (o setup
+ * da call FALHOU) e, mesmo assim, o `startCaptureJS` chega e o feeder começa a
+ * escrever PCM no uplink. Alimentar um motor cuja call não existe o deixa num
+ * estado inconsistente e o processo MORRE POR SINAL — o log do bot mostra
+ * "código: null", que é justamente ausência de código de saída.
+ *
+ * Sem a call criada no servidor não há para onde mandar áudio, então não manda.
+ * Extraído como função pura para a regra ser testável sem WASM
+ * (`tests/capture-gate.test.mjs`).
+ */
+export const podeAlimentarCaptura = (estado) => {
+    if (!estado)
+        return { pode: false, motivo: 'sem_sessao' };
+    if (estado.feeder)
+        return { pode: false, motivo: 'ja_tocando' };
+    if (estado.callFalhou)
+        return { pode: false, motivo: 'setup_falhou' };
+    return { pode: true };
+};
+/**
+ * Interpreta o evento de estado da call e diz se o setup FALHOU.
+ *
+ * `call_result != 0` significa que o servidor não criou a call
+ * (`is_group_call_created_on_server=false`). Função pura, para ser testável.
+ */
+export const setupDaCallFalhou = (data) => {
+    try {
+        const info = JSON.parse(String(data)).call_info ?? {};
+        const resumo = [
+            `state=${info.call_state}`,
+            `result=${info.call_result}`,
+            `setupError=${info.call_setup_error_type}`,
+            `noServidor=${info.is_group_call_created_on_server}`,
+            `participantes=${info.participant_count}`,
+            `grupo=${info.is_group_call}`
+        ].join(' ');
+        const falhou = Boolean(info.call_result && info.call_result !== 0);
+        return { falhou, resumo, result: info.call_result, setupError: info.call_setup_error_type };
+    }
+    catch {
+        return { falhou: false, resumo: data ?? '' };
+    }
+};
+/**
  * Owns every group-call media session in this process.
  *
  * One engine per group: the WASM stack keeps per-call state, and a second engine
@@ -221,7 +270,9 @@ export class GroupCallMedia {
             captureChannels: 1,
             captureFramesPerChunk: 320,
             readyWaiters: [],
-            aviso: null
+            aviso: null,
+            // Sessão nova: o setup ainda não falhou.
+            callFalhou: false
         };
         this.#sessions.set(grupo, media);
         try {
@@ -555,22 +606,16 @@ export class GroupCallMedia {
             // O objeto de estado e' enorme; aqui so' os campos que dizem se a call
             // realmente existe no servidor. Sem eles, um 'call_result: 4' passa
             // invisivel e o sintoma vira 'nao inicia' sem motivo.
-            let resumo = data ?? '';
-            try {
-                const info = JSON.parse(String(data)).call_info ?? {};
-                resumo = [
-                    `state=${info.call_state}`,
-                    `result=${info.call_result}`,
-                    `setupError=${info.call_setup_error_type}`,
-                    `noServidor=${info.is_group_call_created_on_server}`,
-                    `participantes=${info.participant_count}`,
-                    `grupo=${info.is_group_call}`
-                ].join(' ');
-                if (info.call_result && info.call_result !== 0) {
-                    this.#log(`[CALLP] A CALL FALHOU NO SETUP (result=${info.call_result}, setupError=${info.call_setup_error_type})`);
-                }
+            const { falhou, resumo, result, setupError } = setupDaCallFalhou(data);
+            if (falhou) {
+                this.#log(`[CALLP] A CALL FALHOU NO SETUP (result=${result}, setupError=${setupError})`);
+                // Marca o setup como falho: a captura não pode alimentar áudio
+                // num motor cuja call não existe no servidor (isso derrubava o
+                // processo por sinal — "código: null").
+                media.callFalhou = true;
+                media.feeder?.stop();
+                media.feeder = null;
             }
-            catch { /* loga o bruto se nao parsear */ }
             this.#log(`[CALLP] estado da call: ${resumo}`);
         }
         else if (type === EVENT_CALL_ENDED) {
@@ -593,8 +638,17 @@ export class GroupCallMedia {
         const media = this.#sessions.get(grupo);
         if (!media)
             return;
-        if (media.feeder)
+        // NÃO alimentar áudio quando a call NÃO existe no servidor. Ver
+        // `podeAlimentarCaptura`: alimentar um motor cujo setup falhou o deixa
+        // num estado inconsistente e o processo morre por SINAL ("código: null"
+        // no log do bot, que reinicia e derruba a call no meio do comando).
+        const { pode, motivo } = podeAlimentarCaptura(media);
+        if (!pode) {
+            if (motivo === 'setup_falhou') {
+                this.#log('[CALLP] captura pedida com o setup FALHO — nao vou alimentar audio (a call nao existe no servidor)');
+            }
             return;
+        }
         this.#startFeeder(media, media.pendingAudioSource ?? 'silence');
     };
     #onCaptureStop = (grupo) => {

@@ -68,6 +68,41 @@ export interface TocarAudioResult {
  */
 export declare const buildCallRoster: (participantes: string[], selfJid: string, sock: any, log?: (msg: string) => void) => Promise<any[]>;
 /**
+ * Decide se a captura pode ser alimentada com áudio.
+ *
+ * ## Por que existe
+ *
+ * Medido no log do dono: o motor emite `call_result=4` /
+ * `call_setup_error_type=1` / `is_group_call_created_on_server=false` (o setup
+ * da call FALHOU) e, mesmo assim, o `startCaptureJS` chega e o feeder começa a
+ * escrever PCM no uplink. Alimentar um motor cuja call não existe o deixa num
+ * estado inconsistente e o processo MORRE POR SINAL — o log do bot mostra
+ * "código: null", que é justamente ausência de código de saída.
+ *
+ * Sem a call criada no servidor não há para onde mandar áudio, então não manda.
+ * Extraído como função pura para a regra ser testável sem WASM
+ * (`tests/capture-gate.test.mjs`).
+ */
+export declare const podeAlimentarCaptura: (estado: {
+    callFalhou?: boolean;
+    feeder?: unknown;
+} | null | undefined) => {
+    pode: boolean;
+    motivo?: string;
+};
+/**
+ * Interpreta o evento de estado da call e diz se o setup FALHOU.
+ *
+ * `call_result != 0` significa que o servidor não criou a call
+ * (`is_group_call_created_on_server=false`). Função pura, para ser testável.
+ */
+export declare const setupDaCallFalhou: (data?: string) => {
+    falhou: boolean;
+    resumo: string;
+    result?: number;
+    setupError?: number;
+};
+/**
  * Owns every group-call media session in this process.
  *
  * One engine per group: the WASM stack keeps per-call state, and a second engine

@@ -532,12 +532,19 @@ export class WasmEngine {
         this.#instance.updateIceRtt?.(rttMs, relayIp, relayPort);
     };
     sendAudioData = (data, ptr) => {
-        this.#ensureInitialized();
-        if (!data || data.length === 0 || !ptr)
-            return;
-        if (typeof this.#instance.onAudioDataFromJs !== "function")
-            return;
+        // O `#ensureInitialized()` fica DENTRO do try de propósito.
+        //
+        // Este método é chamado de dentro do timer do AudioFeeder. Um throw ali não
+        // passa pelo try/catch do chamador — vira `uncaughtException` e o bot
+        // reinicia. Quando a call morre, o motor é destruído (`#instance = null`) e
+        // o timer ainda dispara uma ou duas vezes: era exatamente o
+        // "WasmEngine not initialized" que derrubava o processo no meio da call.
         try {
+            this.#ensureInitialized();
+            if (!data || data.length === 0 || !ptr)
+                return;
+            if (typeof this.#instance.onAudioDataFromJs !== "function")
+                return;
             const heapF32 = this.#instance.GROWABLE_HEAP_F32?.();
             if (!heapF32)
                 return;
@@ -547,7 +554,9 @@ export class WasmEngine {
             heapF32.set(data, index);
             this.#instance.onAudioDataFromJs(ptr, data.length);
         }
-        catch { }
+        catch {
+            /* motor destruído ou heap inconsistente: descartar o chunk é o correto */
+        }
     };
     malloc = (size) => {
         this.#ensureInitialized();
