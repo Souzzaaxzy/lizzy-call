@@ -18,7 +18,32 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const CALL_WASM_AB_PROPS_JSON = process.env.CALL_WASM_AB_PROPS_JSON ?? "";
-const PTHREAD_POOL_SIZE = 20;
+
+/**
+ * Quantos workers pthread o motor sobe.
+ *
+ * ## Por que isto é configurável (e menor que 20)
+ *
+ * Medido (`probe-memoria`): cada worker custa memória de verdade —
+ *
+ *     rss antes:                        48 MB
+ *     rss após initialize (20 workers): 924 MB   <- +876 MB só de workers
+ *
+ * Ou seja, ~45 MB por worker (9,8 MB de WASM + heap + stack). Com 20 workers,
+ * **uma única call consome ~900 MB**. Numa VPS pequena isso estoura a memória e
+ * o OOM killer manda `SIGKILL` — que é exatamente "morto por sinal, sem log"
+ * (`código: null` no bot), sem chance de handler nenhum rodar.
+ *
+ * 20 é o valor que o SDK original trazia; ele foi pensado para um navegador, não
+ * para uma VPS. Aqui o padrão é menor e ajustável por
+ * `CALL_PTHREAD_POOL_SIZE` — quem tem memória sobrando pode subir.
+ */
+const PTHREAD_POOL_SIZE = (() => {
+  const raw = Number(process.env.CALL_PTHREAD_POOL_SIZE);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return 6;
+})();
+
 const VOIP_READY_TIMEOUT_MS = 15_000;
 
 const parseJsonObjectEnv = (raw: string): Record<string, boolean | number | string> => {
