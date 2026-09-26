@@ -100,6 +100,13 @@ export class SignalingBridge {
   /** Diagnostico: chamado quando o ack chega (com o error do servidor). */
   onAckReceived?: (stanzaId: string, tag: string, error: string) => void;
 
+  /**
+   * Chamado quando o ACK de um offer de GRUPO traz o roster/relay inicial.
+   *
+   * É o caminho que destrava o "conectando...". Ver `#entregarGroupInfoDoAck`.
+   */
+  onGroupInfoFromAck?: (payload: { groupInfo: any; relay: any | null; peerJid: string }) => void;
+
   #outgoingSignalingQueue = Promise.resolve<void>(undefined);
   #incomingSignalingQueue = Promise.resolve<void>(undefined);
 
@@ -404,6 +411,24 @@ export class SignalingBridge {
         // Diagnostico antes do encaminhamento: o ack chegou mesmo que ainda nao
         // haja motor para recebe-lo.
         this.onAckReceived?.(stanzaId, signalingTag, ackNode.attrs?.error ?? '0');
+
+        // ── O ROSTER INICIAL DE UMA CALL DE GRUPO VEM NO ACK ─────────────────
+        //
+        // Medido contra a referencia (meowcaller, `ParseInitialGroupCallAck`): o
+        // servidor responde ao `<offer>` de grupo com um `ack` que carrega
+        // `<group_info>` (o roster, com `self_pid` e o transaction-id) e
+        // `<relay>` (a alocacao: chaves, tokens e os endpoints `te2`).
+        //
+        // Antes disto o ack era repassado ao motor como base64 cru e ninguem
+        // lia o filho `group_info`. O motor ficava sem roster e sem relay — e o
+        // sintoma era exatamente o "conectando..." que nunca sai do lugar: a
+        // chamada existe no servidor, mas nao ha caminho de midia para ela.
+        //
+        // Nao e um `group_update` separado: e o MESMO formato, entregue dentro
+        // do ack. Por isso ele segue pelo mesmo caminho (`#onIncomingCallStanza`
+        // -> `handleGroupUpdate`), que ja sabe parsear e alimentar o motor.
+        this.#entregarGroupInfoDoAck(ackNode, effectivePeerJid);
+
         if (!this.#voip) return;
         const { encodeBinaryNode } = this.#baileys;
         const ackPayload = Buffer.from(encodeBinaryNode(ackNode)).toString("base64");
@@ -422,6 +447,58 @@ export class SignalingBridge {
   };
 
   // ─── private — inbound signaling ──────────────────────────────────────────
+
+  /**
+   * Extrai `<group_info>`/`<relay>` do ACK de um offer de grupo e entrega.
+   *
+   * ## Por que aqui
+   *
+   * A referencia (meowcaller, `ParseInitialGroupCallAck`) trata o ack como a
+   * fonte do roster INICIAL de uma call de grupo: o servidor confirma o offer
+   * respondendo com `group_info` (transaction-id, `self_pid`, usuarios/devices)
+   * e `relay` (chave, tokens, endpoints `te2`). É o mesmo formato de um
+   * `group_update`, só que entregue dentro do ack em vez de numa stanza própria.
+   *
+   * O SDK original só repassava o ack ao motor como base64. O motor até entende
+   * a stanza, mas o caminho de MÍDIA (roster + relay) nunca era aplicado — e sem
+   * os dois a chamada fica "conectando..." para sempre, porque não há para onde
+   * mandar nem de onde receber áudio.
+   *
+   * A entrega é feita embrulhando o `group_info` num nó `group_update`, que é o
+   * formato que `#onIncomingCallStanza` já sabe processar (parse do roster,
+   * alocação do relay, epoch de chave e `handleGroupUpdate` no motor).
+   */
+  #entregarGroupInfoDoAck = (ackNode: any, peerJid: string): void => {
+    try {
+      const { getBinaryNodeChild } = this.#baileys || {};
+      if (typeof getBinaryNodeChild !== 'function') return;
+
+      const groupInfo = getBinaryNodeChild(ackNode, 'group_info');
+      if (!groupInfo) return;
+
+      const relay = getBinaryNodeChild(ackNode, 'relay') ?? null;
+
+      // O `group_info` sozinho não diz de qual call é: os atributos de
+      // identidade (`call-id`/`call-creator`) ficam no próprio `group_info`, mas
+      // quando vierem vazios copiamos do ack/offer para o parser não descartar.
+      const attrs = { ...(groupInfo.attrs || {}) };
+      if (!attrs['call-id'] && ackNode?.attrs?.['call-id']) attrs['call-id'] = ackNode.attrs['call-id'];
+      if (!attrs['call-creator'] && ackNode?.attrs?.['call-creator']) {
+        attrs['call-creator'] = ackNode.attrs['call-creator'];
+      }
+
+      const conteudo = [groupInfo, ...(relay ? [relay] : [])];
+      const groupUpdateNode = {
+        tag: 'group_update',
+        attrs,
+        content: conteudo,
+      };
+
+      this.onGroupInfoFromAck?.({ groupInfo: groupUpdateNode, relay, peerJid });
+    } catch {
+      /* diagnostico nunca derruba o envio da sinalizacao */
+    }
+  };
 
   #doProcessIncomingCall = async (node: any, voip: any, activeCallId: string): Promise<void> => {
     const { getAllBinaryNodeChildren, getBinaryNodeChild, encodeBinaryNode } = this.#baileys;

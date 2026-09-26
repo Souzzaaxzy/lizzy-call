@@ -28,6 +28,16 @@ export declare class SignalingBridge {
     onAckMissing?: (stanzaId: string, tag: string, routeTo: string) => void;
     /** Diagnostico: chamado quando o ack chega (com o error do servidor). */
     onAckReceived?: (stanzaId: string, tag: string, error: string) => void;
+    /**
+     * Chamado quando o ACK de um offer de GRUPO traz o roster/relay inicial.
+     *
+     * É o caminho que destrava o "conectando...". Ver `#entregarGroupInfoDoAck`.
+     */
+    onGroupInfoFromAck?: (payload: {
+        groupInfo: any;
+        relay: any | null;
+        peerJid: string;
+    }) => void;
     constructor(config: SignalingBridgeConfig);
     /** Hand the WASM engine in so we can dispatch ack callbacks back to it. */
     attachEngine: (voip: any) => void;

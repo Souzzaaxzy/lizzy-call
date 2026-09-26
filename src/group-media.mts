@@ -337,6 +337,19 @@ export class GroupCallMedia {
                 this.#log(`[CALLP] ack de ${tag} (id=${stanzaId}) error=${error}`);
             };
 
+            // O ROSTER INICIAL vem dentro do ACK do offer de grupo (medido na
+            // referencia: `ParseInitialGroupCallAck`). Aqui ele entra no MESMO
+            // caminho de um `group_update` — que ja parseia o roster, aloca o
+            // relay, aplica o epoch e alimenta o motor. Sem isto o motor fica sem
+            // caminho de midia e a call fica "conectando..." para sempre.
+            media.signaling.onGroupInfoFromAck = ({ groupInfo, peerJid }) => {
+                this.#log('[CALLP] ack trouxe group_info/relay — aplicando o roster inicial');
+                void this.#onIncomingCallStanza(grupo, {
+                    attrs: { from: peerJid || grupo },
+                    content: [groupInfo]
+                });
+            };
+
             engine.initVoipStack(selfJid, bareJid(selfJid) ?? selfJid, selfJid);
             await this.#waitStack(engine, STACK_READY_MS);
 
