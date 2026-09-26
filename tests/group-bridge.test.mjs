@@ -319,11 +319,24 @@ describe('applyKeyEpoch', () => {
         assert.equal(session.keyEpochCallId, 'C');
     });
 
-    it('rejects a short epoch', () => {
+    it('aceita o epoch CIFRADO do formato real (enc msg v=2)', () => {
+        // Medido contra a referencia (`ParseGroupCallEncRekey`): o formato real
+        // e `<enc type="msg" v="2">CIPHERTEXT</enc>`, nao um `<key>` de 32
+        // bytes. Exigir 32 bytes recusava o epoch real e travava a midia em
+        // 'sem_epoch_de_chave' — o "conectando..." que nunca saia.
         const session = {};
-        const r = applyKeyEpoch(session, { transactionId: 1, key: new Uint8Array(16) });
+        const ciphertext = new Uint8Array(48).fill(9);
+        const r = applyKeyEpoch(session, { transactionId: 14, key: ciphertext, callId: 'C' });
+        assert.equal(r.applied, true, 'o epoch cifrado precisa ser aceito');
+        assert.equal(session.keyEpoch.length, 48);
+        assert.equal(session.keyEpochCallId, 'C');
+    });
+
+    it('rejects an empty epoch', () => {
+        const session = {};
+        const r = applyKeyEpoch(session, { transactionId: 1, key: new Uint8Array(0) });
         assert.equal(r.applied, false);
-        assert.equal(r.reason, 'epoch_curto');
+        assert.equal(r.reason, 'sem_epoch');
     });
 
     it('rejects an older epoch', () => {

@@ -483,7 +483,11 @@ export const applyKeyEpoch = (
     }
 ) => {
     if (!session) return { applied: false, reason: 'sem_sessao' };
-    if (!key || key.length < 32) return { applied: false, reason: 'epoch_curto' };
+    // Aceita o epoch CIFRADO (formato real: `<enc>` msg/pkmsg v=2, com o
+    // ciphertext) alem do `<key>` cru de 32 bytes das capturas antigas. Exigir
+    // 32 bytes recusava o formato real, e a midia ficava em
+    // 'sem_epoch_de_chave' para sempre. Quem decifra e o motor.
+    if (!key || key.length === 0) return { applied: false, reason: 'sem_epoch' };
     if (
         transactionId !== undefined &&
         Number.isFinite(transactionId) &&

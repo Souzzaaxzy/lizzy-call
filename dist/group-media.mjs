@@ -482,18 +482,46 @@ export class GroupCallMedia {
                 return;
             }
             if (action.tag === 'enc_rekey') {
+                // O epoch vem CIFRADO. Medido contra a referencia
+                // (`ParseGroupCallEncRekey`): o formato real e
+                //
+                //   <enc_rekey call-id call-creator transaction-id>
+                //     <encopt keygen="2"/>
+                //     <enc type="msg|pkmsg" v="2">CIPHERTEXT</enc>
+                //   </enc_rekey>
+                //
+                // A versao anterior procurava um filho `<key>` cru, que NAO
+                // existe nesse formato — o epoch nunca era aceito e a midia
+                // ficava presa em "sem_epoch_de_chave" para sempre.
+                //
+                // Quem decifra e o MOTOR (ele tem as sessoes Signal); aqui basta
+                // reconhecer a presenca do epoch cifrado para o portao de
+                // prontidao abrir, e repassar a stanza intacta ao motor.
+                const encNode = Array.isArray(action.content)
+                    ? action.content.find((c) => c.tag === 'enc')
+                    : null;
                 const keyNode = Array.isArray(action.content)
                     ? action.content.find((c) => c.tag === 'key')
                     : null;
-                const key = keyNode?.content instanceof Uint8Array ? keyNode.content : null;
+                const ciphertext = encNode?.content instanceof Uint8Array ? encNode.content : null;
+                const rawKey = keyNode?.content instanceof Uint8Array ? keyNode.content : null;
+                // O portao aceita o epoch cifrado (formato real). Um `<key>` cru
+                // continua valido, para compatibilidade com stanzas ja capturadas.
+                const epochMaterial = rawKey ?? ciphertext;
+                if (ciphertext) {
+                    this.#log(`[CALLP] enc_rekey cifrado (type=${encNode?.attrs?.type} v=${encNode?.attrs?.v}, ${ciphertext.length} bytes)`);
+                }
                 const epoch = applyKeyEpoch(media.session, {
                     callId: action.attrs?.['call-id'],
                     callCreator: action.attrs?.['call-creator'],
                     transactionId: Number(action.attrs?.['transaction-id']),
-                    key
+                    key: epochMaterial
                 });
                 if (epoch.applied) {
                     this.#log(`[CALLP] epoch de chave tx=${epoch.transactionId}`);
+                }
+                else {
+                    this.#log(`[CALLP] epoch NAO aplicado: ${epoch.reason}`);
                 }
                 // The engine needs it too (it decrypts its own copy).
                 const { encodeBinaryNode } = await this.#baileys();
