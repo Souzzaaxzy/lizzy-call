@@ -310,10 +310,42 @@ export class RelayRtcTransport {
         continue;
       }
 
-      const authToken =
-        update.auth_tokens && relay.auth_token_id != null && relay.auth_token_id >= 0
-          ? update.auth_tokens[relay.auth_token_id]
-          : undefined;
+      // ── DUAS CREDENCIAIS, INDEXADAS DIFERENTE ─────────────────────────────
+      //
+      // O bloco `<relay>` carrega DOIS conjuntos de tokens, com índices
+      // separados: `<token id=…>` (token_id) e `<auth_token id=…>`
+      // (auth_token_id). Referência (`whatsapp-rust`,
+      // `wacore/src/voip_control/transport.rs`):
+      //
+      //   "the relay block carries two separately indexed token sets and
+      //    **swapping them is a call that will not connect**."
+      //
+      // ## `auth_token_id` ausente é 0, NÃO `undefined` (o defeito MEDIDO)
+      //
+      // Referência (`voip/engine.rs`, no campo `auth_token`):
+      //
+      //   "`auth_token_id` is an ordinary index, exactly as `token_id` is: both
+      //    **default to 0** when the attribute is absent, and slot 0 is a real
+      //    slot. It is *not* a sentinel -- treating it as one would **blank the
+      //    ufrag for every offer that omits the attribute, which is the common
+      //    shape**."
+      //
+      // Era exatamente isso: sem `auth_token_id`, o `authToken` ficava
+      // `undefined` e o ufrag caía no TOKEN de alocação. Medido com os tamanhos
+      // reais do WhatsApp (`repro-ufrag-invalido.mjs`):
+      //
+      //   token base64:      260 chars  -> ESTOURA o teto de 256 do ICE
+      //   auth_token base64:  96 chars  -> cabe
+      //
+      // e o wrtc recusava com o erro EXATO do log do dono:
+      //
+      //   Invalid ICE parameters: ICE ufrag must be between 4 and 256 chars long
+      //
+      // Agora o índice ausente vale 0 (slot real), como a referência manda.
+      const authTokenId = relay.auth_token_id != null && relay.auth_token_id >= 0
+        ? relay.auth_token_id
+        : 0;
+      const authToken = update.auth_tokens?.[authTokenId];
 
       for (const address of relay.addresses ?? []) {
         if (address.protocol !== RELAY_PROTO_UDP) continue;
@@ -374,7 +406,18 @@ export class RelayRtcTransport {
         authTokenLen: info.authToken?.length ?? 0,
         keyLen: info.key?.length ?? 0,
       });
-      void this.#ensureConnection(info);
+      // `.catch` explícito: sem ele, um SDP recusado (ex.: ufrag fora do limite
+      // do ICE) virava "Promise rejeitada sem tratamento" no log do dono —
+      // ruído que esconde a causa e pode derrubar o processo dependendo do
+      // handler global.
+      void this.#ensureConnection(info).catch((e) => {
+        this.config.onStage?.('conexao_falhou', {
+          relayName: info.name,
+          ip: info.ip,
+          port: info.port,
+          state: `connect_${String(e?.name || 'erro')}: ${String(e?.message || e).slice(0, 80)}`,
+        });
+      });
     }
   };
 
@@ -423,7 +466,7 @@ export class RelayRtcTransport {
     }
 
     bufferPacket(connection, arrayBuffer);
-    void this.#ensureConnection(info);
+    void this.#ensureConnection(info).catch(() => { /* já reportado via onStage */ });
     return packet.byteLength;
   };
 
