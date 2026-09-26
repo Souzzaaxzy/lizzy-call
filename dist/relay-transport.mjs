@@ -17,7 +17,30 @@ const ICE_RTT_POLL_MS = 1_000;
 const MAX_BUFFER_SIZE = 256 * 1024;
 const RELAY_PACKET_LOG_PATH = process.env.CALL_DUMP_RELAY_PACKETS_PATH ?? "";
 const DISABLE_IPV6 = process.env.CALL_DISABLE_IPV6 !== "0";
-const RELAY_PORT_MODE = process.env.CALL_RELAY_PORT_MODE === "web" ? "web" : "original";
+/**
+ * Porta com que se disca o relay.
+ *
+ * ## Por que o padrão é a porta do cliente Web (3480), e não a anunciada
+ *
+ * Medido na referência que FUNCIONA (zapo-caller, TS — marcado `working` pela
+ * wacrg), em `WaVoipCoordinatorOptions.useOriginalRelayPort`:
+ *
+ * > *"Dial each relay on the port its `<te2>` endpoint advertises instead of on
+ * > TRUE_WEB_CLIENT_RELAY_PORT. **Defaults to `false`**, which is what WhatsApp
+ * > Web does. Against WhatsApp's own relays this is the **wrong choice** and the
+ * > call goes **silently one way**: the endpoints advertise a mix of ports, and
+ * > one reached on **3478** completes the handshake and carries the uplink
+ * > **without ever forwarding the peer's stream back**."*
+ *
+ * Era exatamente o nosso sintoma: a call "conecta" (o uplink vai), o bot fica
+ * "conectando...", e nada volta. Aqui o padrão estava em `original` (a porta
+ * anunciada, normalmente 3478) — o modo que a referência diz ser o ERRADO.
+ *
+ * Agora o padrão é `web` (3480), como o WhatsApp Web. O modo `original` continua
+ * disponível para um relay que só responda na porta anunciada:
+ * `CALL_RELAY_PORT_MODE=original`.
+ */
+const RELAY_PORT_MODE = process.env.CALL_RELAY_PORT_MODE === "original" ? "original" : "web";
 const USE_ORIGINAL_RELAY_PORTS = RELAY_PORT_MODE === "original";
 const RELAY_DTLS_FINGERPRINT = "F9:CA:0C:98:A3:CC:71:D6:42:CE:5A:E2:53:D2:15:20:D3:1B:BA:D8:57:A4:F0:AF:BE:0B:FB:F3:6B:0C:A0:68";
 const getConnectionIdentifier = (ip, port) => ip.includes(":") ? `[${ip}]:${port}` : `${ip}:${port}`;
