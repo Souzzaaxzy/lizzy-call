@@ -133,6 +133,12 @@ export declare const GROUP_UPDATE_TAG = "group_update";
 export declare const ENC_REKEY_TAG = "enc_rekey";
 /** `jid` of the call object for a call id. */
 export declare const callObjectJid: (callId: string) => string;
+/**
+ * Fresh call id: 16 random bytes as uppercase hex, the same shape WhatsApp Web
+ * uses. The engine can generate one too; this is for callers that want the id up
+ * front.
+ */
+export declare const generateCallId: () => string;
 /** Bare account JID (strips the `:device` suffix). */
 export declare const bareJid: (jid: string | null | undefined) => string | null;
 /** Device id from a JID (`x:3@s.whatsapp.net` -> 3, `x@s.whatsapp.net` -> 0). */

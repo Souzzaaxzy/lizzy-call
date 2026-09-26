@@ -1,50 +1,4 @@
-/**
- * Group-call bridge.
- *
- * The upstream caller SDK wires the 1:1 path only: it handles `offer`, `accept`,
- * `transport`, `terminate` and `relaylatency`, but never `group_update`. That is
- * the stanza where the server hands a group call its participant roster, the
- * per-device PIDs, and — critically — the **relay allocation** (key, tokens,
- * endpoints). Without it the WASM engine has no media path at all, which is why
- * "start a group call" alone never produced audio.
- *
- * This module closes that gap. It is deliberately pure with respect to I/O: it
- * takes parsed WABinary nodes and produces typed values plus the calls to make
- * on the engine, so the parsing can be tested without a socket or a call.
- *
- * ## What a group call needs, and where each piece comes from
- *
- * | Piece | Stanza | Why it matters |
- * |---|---|---|
- * | Roster (users + devices) | `group_update` > `group_info` | who is in the call |
- * | Per-device PID | `group_update` > `group_info` > `user` > `device@pid` | media is addressed by PID, not JID |
- * | Relay allocation | `group_update` > `relay` | the UDP path for media |
- * | Shared key epoch | `enc_rekey` | one 32-byte key per epoch, per participant |
- * | Roster transaction | `group_info@transaction-id` | snapshots must increase; stale ones are ignored |
- *
- * ## Shape reference
- *
- * Field names come from the group-call captures published by the WhatsApp Calls
- * Research Group effort and the `meowcaller` datasheets
- * (`voip/group_update_ingest`), which list the exact attribute paths:
- *
- * ```
- * call/group_update/group_info.attrs.transaction-id
- * call/group_update/group_info.attrs.media
- * call/group_update/group_info.attrs.group-jid        (optional)
- * call/group_update/group_info.attrs.joinable         (optional)
- * call/group_update/group_info/user.attrs.jid
- * call/group_update/group_info/user.attrs.state
- * call/group_update/group_info/user/device.attrs.jid
- * call/group_update/group_info/user/device.attrs.pid   (connected devices only)
- * call/group_update/relay.attrs.transaction-id
- * call/group_update/relay.attrs.self_pid
- * call/group_update/relay/token.attrs.id
- * call/group_update/relay/auth_token.attrs.id
- * call/group_update/relay/key
- * call/group_update/relay/te2.attrs.relay_id
- * ```
- */
+import { randomBytes } from 'crypto';
 /** JIDs whose server is `call` address the call object itself. */
 const CALL_SERVER = 'call';
 /** Actions that carry a group roster update. */
@@ -53,6 +7,12 @@ export const GROUP_UPDATE_TAG = 'group_update';
 export const ENC_REKEY_TAG = 'enc_rekey';
 /** `jid` of the call object for a call id. */
 export const callObjectJid = (callId) => `${callId}@${CALL_SERVER}`;
+/**
+ * Fresh call id: 16 random bytes as uppercase hex, the same shape WhatsApp Web
+ * uses. The engine can generate one too; this is for callers that want the id up
+ * front.
+ */
+export const generateCallId = () => randomBytes(16).toString('hex').toUpperCase();
 /** Bare account JID (strips the `:device` suffix). */
 export const bareJid = (jid) => {
     if (typeof jid !== 'string' || !jid)

@@ -47,6 +47,7 @@ import {
     buildParticipantLists,
     callObjectJid,
     bareJid,
+    generateCallId,
     type GroupSession,
     type BinaryNode
 } from './group-bridge.mjs';
@@ -157,12 +158,14 @@ export class GroupCallMedia {
      */
     entrarNaCall = async (options: {
         grupo: string;
-        callId: string;
-        callCreator: string;
+        /** Reuse a call id, or omit to let the engine generate one. */
+        callId?: string;
+        /** Participants to invite (bare JIDs). */
+        participantes?: string[];
         sock: any;
         groupInfo?: BinaryNode | null;
     }): Promise<EntrarNaCallResult> => {
-        const { grupo, callId, callCreator, sock } = options;
+        const { grupo, sock } = options;
         if (this.#sessions.has(grupo)) {
             return { ok: false, motivo: 'ja_na_call', stage: this.estagio(grupo) };
         }
@@ -200,7 +203,7 @@ export class GroupCallMedia {
             relay: null as unknown as RelayRtcTransport,
             signaling: null as unknown as SignalingBridge,
             session: { relay: null },
-            callId,
+            callId: options.callId ?? '',
             selfJid,
             stage: 'parado',
             feeder: null,
@@ -235,27 +238,45 @@ export class GroupCallMedia {
                 void this.#onIncomingCallStanza(grupo, node);
             });
 
-            const lists = options.groupInfo
-                ? buildParticipantLists(parseGroupUpdate({
-                    tag: 'group_update',
-                    attrs: {},
-                    content: [options.groupInfo]
-                })?.groupInfo ?? null, selfJid)
-                : { pnUserJids: [], lidUserJids: [], deviceJidsCsv: [] };
+            // The ENGINE owns the call, and that is the whole point.
+            //
+            // Measured (`tests/wasm-call-ownership.mjs`): `startGroupCall` makes
+            // the engine emit the `<call><offer>` itself, while
+            // `joinVoipOngoingCall` is silent unless the engine already knows the
+            // call. Creating the call with separate signaling therefore left the
+            // engine with NO call state, and the negotiation never completed —
+            // which is exactly the "conectando..." that never finishes.
+            //
+            // So the engine creates the call here, and the signaling it emits
+            // goes out through the socket (see `#onSignaling`).
+            const participantes = options.participantes ?? [];
+            const lists = buildParticipantLists(
+                {
+                    users: participantes.map((jid: string) => ({
+                        jid,
+                        bare: bareJid(jid),
+                        pn: null,
+                        state: 'outgoing',
+                        type: null,
+                        connected: false,
+                        devices: [{ jid, pid: undefined, platform: null, capabilityVersion: undefined }]
+                    }))
+                } as any,
+                selfJid
+            );
 
-            engine.joinOngoingGroupCall({
-                callId,
-                callCreatorJid: callCreator,
-                initialPeerJid: callCreator,
+            const novoCallId = options.callId || generateCallId();
+            engine.startGroupCall({
                 groupJid: grupo,
                 pnUserJids: lists.pnUserJids,
                 lidUserJids: lists.lidUserJids,
                 deviceJidsCsv: lists.deviceJidsCsv,
-                initialGroupTransactionId: 0,
-                joinAndAccept: true
+                callId: novoCallId,
+                isVideo: false
             });
+            media.callId = novoCallId;
             media.stage = 'aguardando_roster';
-            this.#log(`[CALLP] midia: entrou na call ${callId} do grupo ${grupo}`);
+            this.#log(`[CALLP] midia: engine criou a call ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
 
             // Media readiness needs the server's roster + relay. Wait a bounded
             // time and report honestly if it never arrives.
@@ -265,14 +286,14 @@ export class GroupCallMedia {
                 media.stage = 'aguardando_roster';
                 return {
                     ok: true,
-                    callId,
+                    callId: media.callId,
                     aviso: `Chamada aberta, mas a mídia ainda não está pronta (${ready.reason ?? 'sem motivo'}).`,
                     stage: media.stage
                 };
             }
 
             media.stage = 'pronta';
-            return { ok: true, callId, stage: media.stage };
+            return { ok: true, callId: media.callId, stage: media.stage };
         } catch (e: any) {
             this.#log(`[CALLP] midia falhou: ${e?.message || e}`);
             await this.#destroy(grupo);

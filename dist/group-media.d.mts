@@ -81,8 +81,10 @@ export declare class GroupCallMedia {
      */
     entrarNaCall: (options: {
         grupo: string;
-        callId: string;
-        callCreator: string;
+        /** Reuse a call id, or omit to let the engine generate one. */
+        callId?: string;
+        /** Participants to invite (bare JIDs). */
+        participantes?: string[];
         sock: any;
         groupInfo?: BinaryNode | null;
     }) => Promise<EntrarNaCallResult>;

@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 /**
  * Group-call bridge.
  *
@@ -141,6 +142,14 @@ export const ENC_REKEY_TAG = 'enc_rekey';
 
 /** `jid` of the call object for a call id. */
 export const callObjectJid = (callId: string): string => `${callId}@${CALL_SERVER}`;
+
+/**
+ * Fresh call id: 16 random bytes as uppercase hex, the same shape WhatsApp Web
+ * uses. The engine can generate one too; this is for callers that want the id up
+ * front.
+ */
+export const generateCallId = (): string =>
+    randomBytes(16).toString('hex').toUpperCase();
 
 /** Bare account JID (strips the `:device` suffix). */
 export const bareJid = (jid: string | null | undefined): string | null => {

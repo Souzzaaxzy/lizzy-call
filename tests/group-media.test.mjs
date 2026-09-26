@@ -154,8 +154,7 @@ describe('GroupCallMedia (caminho de mídia)', () => {
         local = new GroupCallMedia({ log: () => {} });
         await local.entrarNaCall({
             grupo: GROUP,
-            callId: CALL_ID,
-            callCreator: SELF_LID,
+            participantes: ['242653052539031@lid', '74170125783269@lid'],
             sock,
             groupInfo: null
         });
