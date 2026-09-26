@@ -204,9 +204,18 @@ export declare const mediaReady: ({ relay, groupInfo, hasKeyEpoch, selfJid }: {
 /**
  * Build the participant lists `startVoipGroupCall` / `joinVoipOngoingCall` want.
  *
- * The engine takes the same participants in three parallel arrays: PN users,
- * LID users, and one CSV of device JIDs per participant. Keeping them aligned
- * matters — the engine zips them by index.
+ * The engine takes the same participants in three parallel arrays — PN users,
+ * LID users and one CSV of device JIDs — and zips them BY INDEX. Entry `i` must
+ * therefore describe the same person in all three, so the lists always keep the
+ * same length.
+ *
+ * ## Prefer a real PN, fall back to the LID
+ *
+ * `pnUserJids` is the phone-number form. The roster the server sends carries the
+ * account as a LID, and `user_pn` only when the server knows the number — so a
+ * participant with no known PN falls back to its LID there. Dropping the entry
+ * instead would shift every later participant out of alignment, which is worse
+ * than the fallback (`tests/participant-lists.mjs`).
  */
 export declare const buildParticipantLists: (groupInfo: GroupInfo | null, selfJid: string | null) => {
     pnUserJids: string[];

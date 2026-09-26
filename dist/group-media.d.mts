@@ -53,6 +53,21 @@ export interface TocarAudioResult {
     stage: MediaStage;
 }
 /**
+ * Build the call roster the engine needs, with real identities.
+ *
+ * `startVoipGroupCall` takes the participants in three parallel forms (PN users,
+ * LID users, device JIDs) and zips them by index. The caller only knows the
+ * group members' JIDs, which on a modern group are LIDs — so the phone-number
+ * form has to be resolved, and the device list has to come from a real discovery
+ * instead of assuming one device per person.
+ *
+ * Both are best-effort: a member whose PN or devices cannot be discovered is
+ * still included with whatever is known, so one unreachable member does not sink
+ * the whole call. Exported so the roster can be asserted without booting the
+ * WASM (`tests/roster-build.mjs`).
+ */
+export declare const buildCallRoster: (participantes: string[], selfJid: string, sock: any, log?: (msg: string) => void) => Promise<any[]>;
+/**
  * Owns every group-call media session in this process.
  *
  * One engine per group: the WASM stack keeps per-call state, and a second engine

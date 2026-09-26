@@ -51,6 +51,101 @@ const EVENT_CALL_STATE = 16;
 const EVENT_RELAY_LIST = 156;
 const EVENT_CALL_ENDED = 2;
 /**
+ * Build the call roster the engine needs, with real identities.
+ *
+ * `startVoipGroupCall` takes the participants in three parallel forms (PN users,
+ * LID users, device JIDs) and zips them by index. The caller only knows the
+ * group members' JIDs, which on a modern group are LIDs — so the phone-number
+ * form has to be resolved, and the device list has to come from a real discovery
+ * instead of assuming one device per person.
+ *
+ * Both are best-effort: a member whose PN or devices cannot be discovered is
+ * still included with whatever is known, so one unreachable member does not sink
+ * the whole call. Exported so the roster can be asserted without booting the
+ * WASM (`tests/roster-build.mjs`).
+ */
+export const buildCallRoster = async (participantes, selfJid, sock, log = () => { }) => {
+    const selfBare = bareJid(selfJid) ?? selfJid;
+    // Phone numbers: the LID->PN map lives on the socket's signal repository.
+    const pnByLid = new Map();
+    try {
+        const mapping = sock?.signalRepository?.lidMapping;
+        if (mapping?.getPNsForLIDs) {
+            const lids = participantes.filter((j) => String(j).endsWith('@lid'));
+            if (lids.length) {
+                const results = await mapping.getPNsForLIDs(lids.map((j) => bareJid(j) ?? j));
+                for (const entry of results || []) {
+                    if (entry?.lid && entry?.pn)
+                        pnByLid.set(bareJid(entry.lid) ?? entry.lid, entry.pn);
+                }
+            }
+        }
+    }
+    catch (e) {
+        log(`[CALLP] não consegui resolver PN dos convidados: ${e?.message || e}`);
+    }
+    // Devices: the same multi-device discovery the messaging path uses.
+    const devicesByUser = new Map();
+    try {
+        if (typeof sock?.getUSyncDevices === 'function') {
+            const targets = [selfBare, ...participantes].filter(Boolean);
+            const devices = await sock.getUSyncDevices(targets, true, false);
+            for (const d of devices || []) {
+                const jid = d?.jid;
+                if (!jid)
+                    continue;
+                const user = bareJid(jid) ?? jid;
+                const existing = devicesByUser.get(user);
+                if (existing)
+                    existing.push(jid);
+                else
+                    devicesByUser.set(user, [jid]);
+            }
+        }
+    }
+    catch (e) {
+        log(`[CALLP] não consegui descobrir devices dos convidados: ${e?.message || e}`);
+    }
+    const users = [
+        // The creator's own entry always goes first, with its exact device.
+        {
+            jid: selfBare,
+            bare: selfBare,
+            pn: null,
+            state: 'outgoing',
+            type: null,
+            connected: false,
+            devices: [{ jid: selfJid, pid: undefined, platform: null, capabilityVersion: 1 }]
+        },
+        ...participantes.map((jid) => {
+            const bare = bareJid(jid) ?? jid;
+            const isLid = String(jid).endsWith('@lid');
+            const pn = isLid ? (pnByLid.get(bare) ?? null) : bare;
+            const discovered = devicesByUser.get(bare) ?? [];
+            return {
+                jid: bare,
+                bare,
+                pn,
+                state: 'outgoing',
+                type: null,
+                connected: false,
+                // Fall back to the account JID when discovery found nothing, so
+                // the entry is never device-less (the engine rejects those).
+                devices: (discovered.length ? discovered : [bare]).map((d) => ({
+                    jid: d,
+                    pid: undefined,
+                    platform: null,
+                    capabilityVersion: undefined
+                }))
+            };
+        })
+    ];
+    const semPn = users.filter((u) => u.jid !== selfBare && !u.pn).length;
+    if (semPn)
+        log(`[CALLP] ${semPn} convidado(s) sem PN conhecido (entram só como LID)`);
+    return users;
+};
+/**
  * Owns every group-call media session in this process.
  *
  * One engine per group: the WASM stack keeps per-call state, and a second engine
@@ -168,17 +263,10 @@ export class GroupCallMedia {
             // So the engine creates the call here, and the signaling it emits
             // goes out through the socket (see `#onSignaling`).
             const participantes = options.participantes ?? [];
-            const lists = buildParticipantLists({
-                users: participantes.map((jid) => ({
-                    jid,
-                    bare: bareJid(jid),
-                    pn: null,
-                    state: 'outgoing',
-                    type: null,
-                    connected: false,
-                    devices: [{ jid, pid: undefined, platform: null, capabilityVersion: undefined }]
-                }))
-            }, selfJid);
+            const roster = await this.#buildRoster(participantes, selfJid, sock);
+            const lists = buildParticipantLists({ users: roster }, selfJid);
+            this.#log(`[CALLP] roster: ${roster.length} convidados, ` +
+                `pn=${lists.pnUserJids.length} lid=${lists.lidUserJids.length} devices=${lists.deviceJidsCsv.filter(Boolean).length}`);
             const novoCallId = options.callId || generateCallId();
             engine.startGroupCall({
                 groupJid: grupo,
@@ -282,6 +370,11 @@ export class GroupCallMedia {
         }
         throw new Error('Baileys não encontrado (peer dependency ausente)');
     };
+    /**
+     * Build the roster through the exported helper (kept as a thin wrapper so the
+     * log sink is wired in one place).
+     */
+    #buildRoster = (participantes, selfJid, sock) => buildCallRoster(participantes, selfJid, sock, (msg) => this.#log(msg));
     #waitStack = async (engine, timeoutMs) => {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {

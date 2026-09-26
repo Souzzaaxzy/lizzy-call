@@ -346,6 +346,19 @@ export class SignalingBridge {
   /**
    * Send a call stanza and feed the resulting server ack back to the WASM —
    * without this, the WASM stalls and never receives the relay-list update.
+   *
+   * ## Why the wait is registered BEFORE the send
+   *
+   * The ack is a WebSocket frame. Sending first and only then calling
+   * `waitForMessage` opens a window: a fast ack arrives while no listener is
+   * registered and is dropped on the floor. The engine then never learns that
+   * the server accepted the offer, the setup stalls, and the call dies a few
+   * seconds later with `call_result: 4` / `call_setup_error_type: 1` — the
+   * "conectando..." that never finishes.
+   *
+   * `query()` in the socket library does it the other way round for exactly this
+   * reason: it registers `waitForMessage` first, then sends. We mirror that
+   * ordering here (`tests/signaling-ack-race.mjs` locks it in).
    */
   #sendCallStanza = async (
     routeTo: string,
@@ -355,6 +368,24 @@ export class SignalingBridge {
     callbackPeerJid: string,
   ): Promise<void> => {
     const stanzaId = this.#sock.generateMessageTag();
+
+    // O socket precisa saber esperar por um ack. Sem isso o setup da call nunca
+    // conclui, e o sintoma vira 'a call fica carregando'.
+    if (typeof this.#sock.waitForMessage !== 'function') {
+      await this.#sock.sendNode({
+        tag: "call",
+        attrs: { to: routeTo, id: stanzaId },
+        content: [voipNode],
+      });
+      this.onAckMissing?.(stanzaId, signalingTag, routeTo);
+      return;
+    }
+
+    // Registra a espera ANTES de enviar, para o ack não cair no vazio.
+    const ackPromise = this.#sock
+      .waitForMessage(stanzaId, ACK_TIMEOUT_MS)
+      .catch(() => undefined);
+
     await this.#sock.sendNode({
       tag: "call",
       attrs: { to: routeTo, id: stanzaId },
@@ -363,21 +394,17 @@ export class SignalingBridge {
 
     void (async () => {
       try {
-        // O socket precisa saber esperar por um ack. Sem isso o setup da call
-        // nunca conclui, e o sintoma vira 'a call fica carregando'.
-        if (typeof this.#sock.waitForMessage !== 'function') {
-          this.onAckMissing?.(stanzaId, signalingTag, routeTo);
-          return;
-        }
-        const ackNode = await this.#sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS);
+        const ackNode = await ackPromise;
         if (!ackNode) {
           // O motor PRECISA do ack para concluir o setup. Sem ele, o servidor
           // nunca confirma e a call morre com call_setup_error_type=1.
           this.onAckMissing?.(stanzaId, signalingTag, routeTo);
           return;
         }
-        if (!this.#voip) return;
+        // Diagnostico antes do encaminhamento: o ack chegou mesmo que ainda nao
+        // haja motor para recebe-lo.
         this.onAckReceived?.(stanzaId, signalingTag, ackNode.attrs?.error ?? '0');
+        if (!this.#voip) return;
         const { encodeBinaryNode } = this.#baileys;
         const ackPayload = Buffer.from(encodeBinaryNode(ackNode)).toString("base64");
         const tcToken = await this.ensureTcToken(effectivePeerJid, callbackPeerJid);

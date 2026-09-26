@@ -388,32 +388,40 @@ export const mediaReady = ({
 /**
  * Build the participant lists `startVoipGroupCall` / `joinVoipOngoingCall` want.
  *
- * The engine takes the same participants in three parallel arrays: PN users,
- * LID users, and one CSV of device JIDs per participant. Keeping them aligned
- * matters — the engine zips them by index.
+ * The engine takes the same participants in three parallel arrays — PN users,
+ * LID users and one CSV of device JIDs — and zips them BY INDEX. Entry `i` must
+ * therefore describe the same person in all three, so the lists always keep the
+ * same length.
+ *
+ * ## Prefer a real PN, fall back to the LID
+ *
+ * `pnUserJids` is the phone-number form. The roster the server sends carries the
+ * account as a LID, and `user_pn` only when the server knows the number — so a
+ * participant with no known PN falls back to its LID there. Dropping the entry
+ * instead would shift every later participant out of alignment, which is worse
+ * than the fallback (`tests/participant-lists.mjs`).
  */
 export const buildParticipantLists = (groupInfo: GroupInfo | null, selfJid: string | null): { pnUserJids: string[]; lidUserJids: string[]; deviceJidsCsv: string[] } => {
-    const selfBare = bareJid(selfJid);
-    const pnUserJids = [];
-    const lidUserJids = [];
-    const deviceJidsCsv = [];
+    const pnUserJids: string[] = [];
+    const lidUserJids: string[] = [];
+    const deviceJidsCsv: string[] = [];
 
     for (const user of groupInfo?.users || []) {
         if (!user.jid) continue;
         const isLid = user.jid.endsWith('@lid');
-        // The engine wants both forms per participant; use whichever we have.
-        if (isLid) {
-            lidUserJids.push(user.jid);
-            pnUserJids.push(user.pn || user.jid);
-        } else {
-            pnUserJids.push(user.jid);
-            lidUserJids.push(user.pn || user.jid);
-        }
+
+        // Phone-number form: the known PN, else the LID (alignment > purity).
+        const pn = isLid ? user.pn : user.jid;
+        // LID form: the LID account, or the PN's LID when the roster has one.
+        const lid = isLid ? user.jid : user.pn;
+
+        pnUserJids.push(pn || user.jid);
+        lidUserJids.push(lid || user.jid);
+
         const devices = user.devices.map((d: RosterDevice) => d.jid).filter(Boolean) as string[];
         deviceJidsCsv.push(devices.join(','));
     }
 
-    void selfBare;
     return { pnUserJids, lidUserJids, deviceJidsCsv };
 };
 

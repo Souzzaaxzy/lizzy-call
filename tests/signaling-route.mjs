@@ -35,7 +35,7 @@ const CALL_OBJECT = `${CALL_ID}@call`;
 
 console.log('[route] helpers de roteamento, aplicados ao endereço da call de grupo:');
 // `init()` would need a real socket, but the helpers only need `#baileys`.
-const baileys = await import('/workspace/project/lizzy/node_modules/@itsliaaa/baileys/lib/index.js');
+const baileys = await import('@whiskeysockets/baileys');
 bridge['#baileys'] = baileys;
 
 const toBare = bridge['#toBareJid'];
