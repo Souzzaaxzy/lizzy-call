@@ -123,6 +123,41 @@ export type RelayTransportStats = {
 export type RelayTransportConfig = {
   onTransportMessage: (data: Uint8Array, ip: string, port: number) => void;
   onIceRtt?: (rttMs: number, ip: string, port: number) => void;
+  /**
+   * Diagnóstico por etapa do transporte (Fase 3 da investigação).
+   *
+   * Sem isto, o log só dizia "relay list inválida" quando a lista NÃO parseava —
+   * e nada quando ela chegava. Não dava para distinguir "o relay não chegou" de
+   * "chegou, escolheu endpoint, começou a conectar e falhou", que são causas
+   * completamente diferentes.
+   *
+   * NUNCA recebe material sensível: só id, índice, tamanho e estado.
+   */
+  onStage?: (stage: RelayStage, detalhe: RelayStageDetalhe) => void;
+};
+
+/** Etapas observáveis do caminho do relay (nenhuma carrega credencial). */
+export type RelayStage =
+  | 'relay_list_recebida'
+  | 'endpoint_selecionado'
+  | 'transporte_iniciando'
+  | 'conexao_aberta'
+  | 'conexao_falhou'
+  | 'stun_alloc_visto'
+  | 'midia_enviada';
+
+export type RelayStageDetalhe = {
+  relayName?: string | null;
+  relayId?: number;
+  ip?: string;
+  port?: number;
+  originalPort?: number;
+  endpoints?: number;
+  state?: string;
+  /** Só o tamanho, nunca o conteúdo da credencial. */
+  tokenLen?: number;
+  authTokenLen?: number;
+  keyLen?: number;
 };
 
 const getConnectionIdentifier = (ip: string, port: number): string =>
@@ -328,6 +363,17 @@ export class RelayRtcTransport {
     this.#relayInfoById.clear();
     for (const [id, info] of nextInfoById) {
       this.#relayInfoById.set(id, info);
+      // Fase 3: só o tamanho das credenciais, nunca o conteúdo.
+      this.config.onStage?.('endpoint_selecionado', {
+        relayName: info.name,
+        relayId: info.relayId,
+        ip: info.ip,
+        port: info.port,
+        originalPort: info.originalPort,
+        tokenLen: info.token?.length ?? 0,
+        authTokenLen: info.authToken?.length ?? 0,
+        keyLen: info.key?.length ?? 0,
+      });
       void this.#ensureConnection(info);
     }
   };
@@ -452,6 +498,14 @@ export class RelayRtcTransport {
       throw new Error("RTCPeerConnection unavailable from @roamhq/wrtc");
     }
 
+    // Fase 3: a tentativa de conexão é registrada ANTES de qualquer await, para
+    // que "tentou e não abriu" apareça no log em vez de silêncio. Sem isto, uma
+    // falha de ICE deixava o log parado no `endpoint_selecionado`.
+    this.config.onStage?.('transporte_iniciando', {
+      relayName: connection.info.name,
+      ip: connection.info.ip,
+      port: connection.info.port,
+    });
     this.#closePeerObjects(connection);
     connection.state = "connecting";
 
@@ -470,6 +524,13 @@ export class RelayRtcTransport {
         clearTimeout(connection.connectionTimeout);
         connection.connectionTimeout = null;
       }
+      // Fase 3: o socket WebRTC abriu. NÃO é prova de relay funcional — o STUN
+      // de alocação e a mídia vêm depois (ver `stun_alloc_visto`/`midia_enviada`).
+      this.config.onStage?.('conexao_aberta', {
+        relayName: connection.info.name,
+        ip: connection.info.ip,
+        port: connection.info.port,
+      });
       this.#flushBufferedPackets(connection);
       this.#startIceRttPolling(connection);
     };
@@ -480,6 +541,12 @@ export class RelayRtcTransport {
 
     dc.onerror = (): void => {
       connection.state = "failed";
+      this.config.onStage?.('conexao_falhou', {
+        relayName: connection.info.name,
+        ip: connection.info.ip,
+        port: connection.info.port,
+        state: 'data_channel_error',
+      });
     };
 
     dc.onmessage = (event: { data: unknown }): void => {
@@ -502,6 +569,15 @@ export class RelayRtcTransport {
       if (connection.state === "connecting") {
         connection.state = "failed";
         this.#closePeerObjects(connection);
+        // Fase 3: o ICE não completou dentro do prazo. É um ponto de parada
+        // REAL (não um silêncio): diz que o endpoint foi escolhido e a conexão
+        // foi tentada, mas não abriu.
+        this.config.onStage?.('conexao_falhou', {
+          relayName: connection.info.name,
+          ip: connection.info.ip,
+          port: connection.info.port,
+          state: `ice_timeout_${CONNECTION_TIMEOUT_MS}ms`,
+        });
       }
     }, CONNECTION_TIMEOUT_MS);
 
@@ -599,9 +675,26 @@ export class RelayRtcTransport {
   #sendBufferedPacket = (connection: RelayConnectionRuntime, packet: ArrayBuffer): boolean => {
     try {
       connection.dataChannel?.send(packet);
-      if (classifyRelayPacket(packet) === "non_stun") {
+      const tipo = classifyRelayPacket(packet);
+      if (tipo === "non_stun") {
+        const primeira = !connection.sentMedia;
         connection.hasNonStunPacketSent = true;
         connection.sentMedia = true;
+        // Fase 3: a PRIMEIRA mídia (não-STUN) saiu. É a prova de que o caminho
+        // de transporte está de pé; o STUN de alocação veio antes.
+        if (primeira) {
+          this.config.onStage?.('midia_enviada', {
+            relayName: connection.info.name,
+            ip: connection.info.ip,
+            port: connection.info.port,
+          });
+        }
+      } else if (tipo === "stun_alloc") {
+        this.config.onStage?.('stun_alloc_visto', {
+          relayName: connection.info.name,
+          ip: connection.info.ip,
+          port: connection.info.port,
+        });
       }
       connection.stats.sentPackets += 1;
       connection.stats.sentBytes += packet.byteLength;

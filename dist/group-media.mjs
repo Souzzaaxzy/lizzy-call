@@ -306,7 +306,15 @@ export class GroupCallMedia {
             media.stage = 'engine_iniciado';
             media.relay = new RelayRtcTransport({
                 onTransportMessage: (data, ip, port) => engine.handleOnTransportMessage(data, ip, port),
-                onIceRtt: (rttMs, ip, port) => engine.updateIceRtt(rttMs, ip, port)
+                onIceRtt: (rttMs, ip, port) => engine.updateIceRtt(rttMs, ip, port),
+                // Fase 3: etapas do relay no log, para saber ONDE a call para.
+                // Sem isto, "o relay não chegou" e "chegou e falhou no ICE" eram
+                // indistinguíveis. Nunca recebe credencial: só id/tamanho/estado.
+                onStage: (stage, d) => {
+                    const onde = d.ip ? `${d.ip}:${d.port}${d.relayName ? ` (${d.relayName})` : ''}` : '';
+                    const tamanhos = `token=${d.tokenLen ?? '-'} authToken=${d.authTokenLen ?? '-'} key=${d.keyLen ?? '-'}`;
+                    this.#log(`[RELAY] ${stage}${onde ? ` — ${onde}` : ''}${d.state ? ` state=${d.state}` : ''} ${tamanhos}`);
+                }
             });
             media.signaling = new SignalingBridge({ sock });
             await media.signaling.init();

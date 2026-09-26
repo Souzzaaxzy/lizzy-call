@@ -30,6 +30,32 @@ export type RelayTransportStats = {
 export type RelayTransportConfig = {
     onTransportMessage: (data: Uint8Array, ip: string, port: number) => void;
     onIceRtt?: (rttMs: number, ip: string, port: number) => void;
+    /**
+     * Diagnóstico por etapa do transporte (Fase 3 da investigação).
+     *
+     * Sem isto, o log só dizia "relay list inválida" quando a lista NÃO parseava —
+     * e nada quando ela chegava. Não dava para distinguir "o relay não chegou" de
+     * "chegou, escolheu endpoint, começou a conectar e falhou", que são causas
+     * completamente diferentes.
+     *
+     * NUNCA recebe material sensível: só id, índice, tamanho e estado.
+     */
+    onStage?: (stage: RelayStage, detalhe: RelayStageDetalhe) => void;
+};
+/** Etapas observáveis do caminho do relay (nenhuma carrega credencial). */
+export type RelayStage = 'relay_list_recebida' | 'endpoint_selecionado' | 'transporte_iniciando' | 'conexao_aberta' | 'conexao_falhou' | 'stun_alloc_visto' | 'midia_enviada';
+export type RelayStageDetalhe = {
+    relayName?: string | null;
+    relayId?: number;
+    ip?: string;
+    port?: number;
+    originalPort?: number;
+    endpoints?: number;
+    state?: string;
+    /** Só o tamanho, nunca o conteúdo da credencial. */
+    tokenLen?: number;
+    authTokenLen?: number;
+    keyLen?: number;
 };
 export declare class RelayRtcTransport {
     #private;
