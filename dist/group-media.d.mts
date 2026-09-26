@@ -91,16 +91,32 @@ export declare const podeAlimentarCaptura: (estado: {
     motivo?: string;
 };
 /**
- * Interpreta o evento de estado da call e diz se o setup FALHOU.
+ * Interpreta o evento de estado da call.
  *
- * `call_result != 0` significa que o servidor não criou a call
- * (`is_group_call_created_on_server=false`). Função pura, para ser testável.
+ * ## `call_result != 0` NÃO é falha
+ *
+ * Medido (`probe-estados.mjs`), com o motor real:
+ *
+ *   [t= 1357ms] state=1 result=4 setup=1 noSrv=false ending=false   <- logo apos criar
+ *   [t=16469ms] state=0 result=8 ending=true                        <- falha real
+ *
+ * O `result=4` aparece ~100 ms depois de `startGroupCall`, ANTES de qualquer
+ * resposta do servidor: é o **estado inicial** ("ainda não conectada"), não um
+ * erro. Tratar `result != 0` como falha gerava um alarme falso em TODA chamada —
+ * e fazia o log dizer "A CALL FALHOU NO SETUP" mesmo com a call saudável.
+ *
+ * A falha REAL é o motor começar a derrubar a call: `call_ending === true`, ou
+ * `state === 0` (encerrada) com `result` de erro (8 = FAILED).
+ *
+ * Função pura, para ser testável sem WASM.
  */
 export declare const setupDaCallFalhou: (data?: string) => {
     falhou: boolean;
     resumo: string;
     result?: number;
     setupError?: number;
+    encerrando?: boolean;
+    motivo?: string;
 };
 /**
  * Owns every group-call media session in this process.

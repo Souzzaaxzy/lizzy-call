@@ -170,10 +170,24 @@ export const podeAlimentarCaptura = (estado) => {
     return { pode: true };
 };
 /**
- * Interpreta o evento de estado da call e diz se o setup FALHOU.
+ * Interpreta o evento de estado da call.
  *
- * `call_result != 0` significa que o servidor não criou a call
- * (`is_group_call_created_on_server=false`). Função pura, para ser testável.
+ * ## `call_result != 0` NÃO é falha
+ *
+ * Medido (`probe-estados.mjs`), com o motor real:
+ *
+ *   [t= 1357ms] state=1 result=4 setup=1 noSrv=false ending=false   <- logo apos criar
+ *   [t=16469ms] state=0 result=8 ending=true                        <- falha real
+ *
+ * O `result=4` aparece ~100 ms depois de `startGroupCall`, ANTES de qualquer
+ * resposta do servidor: é o **estado inicial** ("ainda não conectada"), não um
+ * erro. Tratar `result != 0` como falha gerava um alarme falso em TODA chamada —
+ * e fazia o log dizer "A CALL FALHOU NO SETUP" mesmo com a call saudável.
+ *
+ * A falha REAL é o motor começar a derrubar a call: `call_ending === true`, ou
+ * `state === 0` (encerrada) com `result` de erro (8 = FAILED).
+ *
+ * Função pura, para ser testável sem WASM.
  */
 export const setupDaCallFalhou = (data) => {
     try {
@@ -184,10 +198,22 @@ export const setupDaCallFalhou = (data) => {
             `setupError=${info.call_setup_error_type}`,
             `noServidor=${info.is_group_call_created_on_server}`,
             `participantes=${info.participant_count}`,
+            `encerrando=${info.call_ending}`,
             `grupo=${info.is_group_call}`
         ].join(' ');
-        const falhou = Boolean(info.call_result && info.call_result !== 0);
-        return { falhou, resumo, result: info.call_result, setupError: info.call_setup_error_type };
+        // Falha real: o motor está encerrando a call, ou ela terminou com erro.
+        const encerrando = info.call_ending === true;
+        const terminouComErro = info.call_state === 0 && Boolean(info.call_result) && info.call_result !== 0;
+        const falhou = encerrando || terminouComErro;
+        const motivo = encerrando ? 'encerrando' : terminouComErro ? `result=${info.call_result}` : undefined;
+        return {
+            falhou,
+            resumo,
+            result: info.call_result,
+            setupError: info.call_setup_error_type,
+            encerrando,
+            motivo
+        };
     }
     catch {
         return { falhou: false, resumo: data ?? '' };
@@ -606,12 +632,11 @@ export class GroupCallMedia {
             // O objeto de estado e' enorme; aqui so' os campos que dizem se a call
             // realmente existe no servidor. Sem eles, um 'call_result: 4' passa
             // invisivel e o sintoma vira 'nao inicia' sem motivo.
-            const { falhou, resumo, result, setupError } = setupDaCallFalhou(data);
+            const { falhou, resumo, motivo } = setupDaCallFalhou(data);
             if (falhou) {
-                this.#log(`[CALLP] A CALL FALHOU NO SETUP (result=${result}, setupError=${setupError})`);
-                // Marca o setup como falho: a captura não pode alimentar áudio
-                // num motor cuja call não existe no servidor (isso derrubava o
-                // processo por sinal — "código: null").
+                // Falha REAL (o motor começou a derrubar a call), não o
+                // `result=4` do estado inicial — ver o comentário da função.
+                this.#log(`[CALLP] a call ESTA CAINDO (${motivo}) — nao vou alimentar audio`);
                 media.callFalhou = true;
                 media.feeder?.stop();
                 media.feeder = null;
