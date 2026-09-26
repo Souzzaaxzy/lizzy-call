@@ -1,16 +1,28 @@
 {
-  "name": "baileys-caller",
-  "version": "0.1.0",
-  "description": "WhatsApp voice calling SDK for Node.js. Built on Baileys, audio via WhatsApp Web's WASM stack.",
-  "author": "ShellTear",
-  "private": true,
+  "name": "lizzy-call",
+  "version": "0.2.0",
+  "description": "Group-call media stack: WhatsApp Web VoIP WASM with group support (startVoipGroupCall/joinVoipOngoingCall, group_update roster+relay bridge, audio playback). Based on baileys-caller by ShellTear (MIT).",
+  "author": "ShellTear (original baileys-caller); group support by Lizzy",
+  "private": false,
   "type": "module",
   "main": "./dist/index.mjs",
   "module": "./dist/index.mjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Souzzaaxzy/lizzy-call"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.mjs",
       "types": "./dist/index.d.mts"
+    },
+    "./group-media": {
+      "import": "./dist/group-media.mjs",
+      "types": "./dist/group-media.d.mts"
+    },
+    "./group-bridge": {
+      "import": "./dist/group-bridge.mjs",
+      "types": "./dist/group-bridge.d.mts"
     }
   },
   "files": [

@@ -2,7 +2,16 @@
  * Audio feeder.
  *
  * Spawns ffmpeg to decode `source` into f32le PCM at the requested rate, then
- * meters frames out at chunk-cadence to the WASM uplink.
+ * meters frames out at chunk cadence to the WASM uplink.
+ *
+ * ## Why the drain loop looks like this
+ *
+ * ffmpeg reads a local file far faster than real time, so it finishes and exits
+ * while most of the decoded audio is still sitting in our queue. An earlier
+ * version stopped the emitter as soon as the child process was gone, which meant
+ * only the first couple of chunks ever reached the call — about 40 ms of any
+ * song. The emitter must therefore keep draining the queue after ffmpeg exits,
+ * and only stop when the queue is empty too.
  *
  * @author ShellTear
  */
@@ -16,22 +25,28 @@ export class AudioFeeder {
     framesPerChunk;
     onChunk;
     source;
+    onEnd;
     #proc = null;
     #pending = Buffer.alloc(0);
     #queue = [];
     #emitTimer = null;
     #nextEmitAtMs = 0;
     #warmupUntilMs = 0;
+    #procExited = false;
+    #drained = false;
     droppedChunks = 0;
     underflowChunks = 0;
     bytesProduced = 0;
     chunksEmitted = 0;
-    constructor(sampleRate, channels, framesPerChunk, onChunk, source = "silence") {
+    constructor(sampleRate, channels, framesPerChunk, onChunk, source = "silence", 
+    /** Called once, when the source has been fully played out. */
+    onEnd = null) {
         this.sampleRate = sampleRate;
         this.channels = channels;
         this.framesPerChunk = framesPerChunk;
         this.onChunk = onChunk;
         this.source = source;
+        this.onEnd = onEnd;
     }
     start = () => {
         if (this.#proc)
@@ -40,6 +55,8 @@ export class AudioFeeder {
         const chunkBytes = chunkSamples * Float32Array.BYTES_PER_ELEMENT;
         const chunkIntervalMs = (this.framesPerChunk / this.sampleRate) * 1000;
         const inputArgs = this.#resolveInputArgs();
+        this.#procExited = false;
+        this.#drained = false;
         this.#proc = spawn("ffmpeg", [
             "-hide_banner",
             "-loglevel", "error",
@@ -72,7 +89,19 @@ export class AudioFeeder {
             if (code !== 0 && code !== null) {
                 process.stderr.write(`[AudioFeeder] ffmpeg exited with code=${code}\n`);
             }
+            // Flush the tail: ffmpeg can exit with a partial chunk still pending.
+            if (this.#pending.length >= Float32Array.BYTES_PER_ELEMENT) {
+                const usable = Math.floor(this.#pending.length / Float32Array.BYTES_PER_ELEMENT) * Float32Array.BYTES_PER_ELEMENT;
+                const out = new Float32Array(chunkSamples);
+                const slice = this.#pending.subarray(0, Math.min(usable, chunkBytes));
+                out.set(new Float32Array(slice.buffer, slice.byteOffset, Math.floor(slice.length / 4)));
+                this.#queue.push(out);
+                this.#pending = Buffer.alloc(0);
+            }
             this.#proc = null;
+            this.#procExited = true;
+            // Do NOT stop the emitter here: the queue still holds the decoded audio.
+            this.#scheduleNext(chunkSamples, chunkIntervalMs);
         });
         this.#nextEmitAtMs = 0;
         this.#warmupUntilMs = Date.now() + DEFAULT_WARMUP_MS;
@@ -88,6 +117,7 @@ export class AudioFeeder {
         this.#pending = Buffer.alloc(0);
         this.#queue = [];
         this.#warmupUntilMs = 0;
+        this.#procExited = false;
     };
     #resolveInputArgs = () => {
         if (!this.source || this.source === "silence") {
@@ -99,7 +129,18 @@ export class AudioFeeder {
         return ["-i", this.source];
     };
     #scheduleNext = (chunkSamples, chunkIntervalMs) => {
-        if (!this.#proc)
+        // Nothing left to play: ffmpeg is gone AND the queue is drained.
+        if (this.#procExited && this.#queue.length === 0) {
+            if (!this.#drained) {
+                this.#drained = true;
+                try {
+                    this.onEnd?.();
+                }
+                catch { /* the callback must not break playback */ }
+            }
+            return;
+        }
+        if (!this.#proc && this.#queue.length === 0)
             return;
         const now = Date.now();
         if (this.#nextEmitAtMs === 0)
@@ -107,7 +148,9 @@ export class AudioFeeder {
         const delayMs = Math.max(0, this.#nextEmitAtMs - now);
         this.#emitTimer = setTimeout(() => {
             this.#emitTimer = null;
-            if (this.#queue.length < LOW_WATERMARK_CHUNKS && Date.now() < this.#warmupUntilMs) {
+            // Hold the first chunks back until the buffer has depth, but only while
+            // ffmpeg is still feeding us.
+            if (this.#proc && this.#queue.length < LOW_WATERMARK_CHUNKS && Date.now() < this.#warmupUntilMs) {
                 this.#nextEmitAtMs = Date.now() + 10;
                 this.#scheduleNext(chunkSamples, chunkIntervalMs);
                 return;
@@ -120,6 +163,8 @@ export class AudioFeeder {
     #flushOne = (chunkSamples) => {
         let nextChunk = this.#queue.shift();
         if (!nextChunk) {
+            // Ran dry while ffmpeg is still producing: send silence to keep the RTP
+            // stream continuous instead of stalling the encoder.
             nextChunk = new Float32Array(chunkSamples);
             this.underflowChunks += 1;
         }

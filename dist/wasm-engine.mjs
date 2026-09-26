@@ -543,6 +543,135 @@ export class WasmEngine {
         this.#ensureInitialized();
         this.#instance._free(ptr);
     };
+    // ─── group calls ──────────────────────────────────────────────────────────
+    //
+    // The WASM exposes the group entry points WhatsApp Web itself uses; the
+    // upstream caller SDK only ever wires the 1:1 path. These wrappers open the
+    // group ones. `startGroupCall`/`joinOngoingCall` are handled inside the
+    // worker (`worker-modules.js`) and forwarded to
+    // `startVoipGroupCall`/`joinVoipOngoingCall`, which take the participant list
+    // in three parallel forms: PN users, LID users, and a CSV of device JIDs.
+    /**
+     * Start a group call as its creator.
+     *
+     * @param options.groupJid        group the call is bound to
+     * @param options.pnUserJids      participants' phone-number JIDs
+     * @param options.lidUserJids     the same participants as LIDs
+     * @param options.deviceJidsCsv   one CSV string per participant: its devices
+     * @param options.callId          logical call id (from the signaling offer)
+     * @param options.isVideo         request video instead of audio
+     */
+    startGroupCall = (options) => {
+        this.#ensureInitialized();
+        const pn = this.#makeStringList(options.pnUserJids ?? []);
+        const lid = this.#makeStringList(options.lidUserJids ?? []);
+        const devices = this.#makeStringList(options.deviceJidsCsv ?? []);
+        try {
+            return this.#instance.startVoipGroupCall(pn, lid, devices, String(options.callId), Boolean(options.isVideo), String(options.groupJid), Boolean(options.isLightWeight ?? false), "", // scheduleId
+            options.chatName ?? "", "", // chatIcon
+            1, // callFromUI
+            0, // lobbyEntryType
+            options.username ?? "");
+        }
+        finally {
+            pn?.delete?.();
+            lid?.delete?.();
+            devices?.delete?.();
+        }
+    };
+    /**
+     * Join a group call that is already active (the `!callp` → `!musicap` flow:
+     * the call exists, we attach media to it).
+     *
+     * @param options.callId                  active call id
+     * @param options.callCreatorJid          who created the call
+     * @param options.initialPeerJid          first remote participant
+     * @param options.initialGroupTransactionId roster transaction from the offer
+     */
+    joinOngoingGroupCall = (options) => {
+        this.#ensureInitialized();
+        const pn = this.#makeStringList(options.pnUserJids ?? []);
+        const lid = this.#makeStringList(options.lidUserJids ?? []);
+        const devices = this.#makeStringList(options.deviceJidsCsv ?? []);
+        try {
+            return this.#instance.joinVoipOngoingCall(String(options.callId), String(options.callCreatorJid), String(options.initialPeerJid ?? ""), pn, lid, devices, Boolean(options.isVideo), String(options.groupJid ?? ""), Number(options.initialGroupTransactionId ?? 0), false, // callCreatorIsNotContact
+            "", // callLinkCode
+            false, // isLightweight
+            "", // scheduledId
+            Boolean(options.joinAndAccept ?? true), "", // chatName
+            0, // lobbyEntryType
+            false);
+        }
+        finally {
+            pn?.delete?.();
+            lid?.delete?.();
+            devices?.delete?.();
+        }
+    };
+    /** Ask the engine whether a call is already running (group-aware). */
+    checkOngoingCalls = () => {
+        this.#ensureInitialized();
+        return this.#instance.checkOngoingCalls?.();
+    };
+    /**
+     * Introspection for diagnostics and tests: the method names the instantiated
+     * WASM module actually exposes. Used to verify a group entry point exists
+     * before a call path depends on it.
+     */
+    describeInstance = () => {
+        this.#ensureInitialized();
+        const methods = [];
+        for (const name of Object.getOwnPropertyNames(this.#instance)) {
+            // Read the descriptor WITHOUT invoking the property: Emscripten installs
+            // getters that throw (e.g. the deprecated `Module.arguments`), so touching
+            // them aborts the module.
+            let desc;
+            try {
+                desc = Object.getOwnPropertyDescriptor(this.#instance, name);
+            }
+            catch {
+                continue;
+            }
+            if (desc && typeof desc.value === 'function')
+                methods.push(name);
+        }
+        return { methods };
+    };
+    /**
+     * Feed a `group_update` roster/relay snapshot to the engine.
+     *
+     * This is the piece the upstream SDK never wired: `group_update` is how the
+     * server hands us the participant roster, the per-device PIDs and the relay
+     * allocation. Without it the engine has no media path, so it is sent through
+     * the generic signaling entry point (the same one used for
+     * accept/transport/terminate), which is where the WASM routes group actions.
+     */
+    handleGroupUpdate = (msg) => {
+        this.#ensureInitialized();
+        this.#instance.handleIncomingSignalingMessage(msg.payload, String(msg.peerPlatform ?? "0"), String(msg.peerAppVersion ?? "0"), String(msg.epochId ?? "0"), String(msg.timestamp ?? "0"), false, String(msg.peerJid), null);
+    };
+    /**
+     * Feed an `enc_rekey` (group key epoch) to the engine.
+     *
+     * Group media uses one shared 32-byte key per epoch, re-distributed whenever
+     * someone joins or leaves. It arrives encrypted per device, so it goes through
+     * the same decrypting path as a signaling offer.
+     */
+    handleEncRekey = (msg) => {
+        this.#ensureInitialized();
+        this.#instance.handleIncomingSignalingMessage(msg.payload, String(msg.peerPlatform ?? "0"), String(msg.peerAppVersion ?? "0"), String(msg.epochId ?? "0"), String(msg.timestamp ?? "0"), false, String(msg.peerJid), null);
+    };
+    /** Invite one participant into an active call (roster + ring). */
+    inviteToCall = (options) => {
+        this.#ensureInitialized();
+        const devices = this.#makeStringList(options.deviceJids ?? [options.peerJid]);
+        try {
+            return this.#instance.inviteToCall?.(String(options.peerJid), String(options.peerPn ?? options.peerJid), devices, String(options.callId), Boolean(options.isVideo));
+        }
+        finally {
+            devices?.delete?.();
+        }
+    };
     // ─── private ──────────────────────────────────────────────────────────────
     #ensureInitialized = () => {
         if (!this.#initialized || !this.#instance) {
