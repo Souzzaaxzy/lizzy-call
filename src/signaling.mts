@@ -32,16 +32,30 @@ const ACK_TIMEOUT_MS = 15_000;
 
 let _baileysModule: any = null;
 
+/**
+ * The Baileys module, loaded lazily.
+ *
+ * The package name is NOT hard-coded to one distribution: this SDK is used both
+ * with the upstream `@whiskeysockets/baileys` and with forks that ship the same
+ * API under a different name (this project uses `@itsliaaa/baileys`). Trying
+ * both keeps the SDK usable in either setup instead of failing on a name.
+ */
+const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@whiskeysockets/baileys"];
+
 const loadBaileys = async (): Promise<any> => {
   if (_baileysModule) return _baileysModule;
-  try {
-    _baileysModule = await import("@whiskeysockets/baileys");
-    return _baileysModule;
-  } catch {
-    throw new Error(
-      "Could not import @whiskeysockets/baileys. Install it as a peer dependency.",
-    );
+  const tried: string[] = [];
+  for (const name of BAILEYS_PACKAGE_NAMES) {
+    try {
+      _baileysModule = await import(name);
+      return _baileysModule;
+    } catch (e: any) {
+      tried.push(`${name} (${e?.message ?? e})`);
+    }
   }
+  throw new Error(
+    `Could not import Baileys. Install it as a peer dependency. Tried: ${tried.join("; ")}`,
+  );
 };
 
 const getNodeChildren = (node: any): any[] =>

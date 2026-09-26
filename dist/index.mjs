@@ -20,13 +20,25 @@ import { AudioFeeder } from "./audio-feeder.mjs";
 import { CallState } from "./types.mjs";
 export { CallState } from "./types.mjs";
 const SHA256_LEN = 32;
+/**
+ * The Baileys module, loaded lazily.
+ *
+ * Not hard-coded to one distribution: this SDK runs with the upstream
+ * `@whiskeysockets/baileys` and with forks that expose the same API under a
+ * different name (this project uses `@itsliaaa/baileys`).
+ */
+const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@whiskeysockets/baileys"];
 const loadBaileys = async () => {
-    try {
-        return await import("@whiskeysockets/baileys");
+    const tried = [];
+    for (const name of BAILEYS_PACKAGE_NAMES) {
+        try {
+            return await import(name);
+        }
+        catch (e) {
+            tried.push(`${name} (${e?.message ?? e})`);
+        }
     }
-    catch {
-        throw new Error("Could not import @whiskeysockets/baileys. Install it as a peer dependency.");
-    }
+    throw new Error(`Could not import Baileys. Install it as a peer dependency. Tried: ${tried.join("; ")}`);
 };
 const toBareJid = (jid) => {
     if (!jid)
