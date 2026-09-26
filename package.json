@@ -36,7 +36,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
     "example": "tsx examples/call.mts",
-    "fetch-wasm": "node scripts/fetch-wasm-resources.mjs"
+    "fetch-wasm": "node scripts/fetch-wasm-resources.mjs",
+    "test": "node --test \"tests/**/*.test.js\" \"tests/**/*.test.mjs\""
   },
   "dependencies": {
     "@roamhq/wrtc": "^0.10.0",

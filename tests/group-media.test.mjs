@@ -250,3 +250,10 @@ describe('decodificação de áudio', () => {
         assert.equal(ended, true, 'avisou o fim do audio');
     });
 });
+
+// O motor WASM roda em pthreads (worker_threads) que nao encerram sozinhos
+// depois do destroy, entao o processo fica vivo e o runner marca o arquivo como
+// pendente. Aqui ja nao ha nada a medir: encerra de forma limpa.
+after(() => {
+    setTimeout(() => process.exit(0), 100);
+});

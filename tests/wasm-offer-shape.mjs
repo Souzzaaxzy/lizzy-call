@@ -75,22 +75,52 @@ if (!node) {
 const kids = (n) => (Array.isArray(n?.content) ? n.content : []);
 const byTag = (n, t) => kids(n).find((c) => c?.tag === t);
 
-console.log(`[shape] node.tag = ${node.tag}`);
-console.log(`[shape] attrs = ${JSON.stringify(node.attrs)}`);
-const action = kids(node)[0];
-if (action) {
-    console.log(`[shape] action = ${action.tag}`);
-    console.log(`[shape] action.attrs = ${JSON.stringify(action.attrs)}`);
-    console.log(`[shape] action children = ${kids(action).map((c) => c.tag).join(',')}`);
-    const gi = byTag(action, 'group_info');
-    if (gi) {
-        console.log(`[shape] group_info users = ${kids(gi).length}`);
-        const first = kids(gi)[0];
-        if (first) console.log(`[shape] first user = ${JSON.stringify(first.attrs)} devices=${kids(first).length}`);
+/** The engine emits the ACTION node; the SDK wraps it in `<call>`. */
+const action = node.tag === 'call' ? kids(node)[0] : node;
+
+console.log(`[shape] engine payload tag = ${node.tag}`);
+if (node.tag === 'call') console.log(`[shape] envelope attrs = ${JSON.stringify(node.attrs)}`);
+console.log(`[shape] action = ${action?.tag}`);
+console.log(`[shape] action.attrs = ${JSON.stringify(action?.attrs)}`);
+console.log(`[shape] action children = ${kids(action).map((c) => c.tag).join(',')}`);
+
+const gi = byTag(action, 'group_info');
+if (gi) {
+    console.log(`[shape] group_info attrs = ${JSON.stringify(gi.attrs)}`);
+    console.log(`[shape] group_info users = ${kids(gi).length}`);
+    for (const u of kids(gi)) {
+        console.log(`[shape]   user jid=${u.attrs?.jid} state=${u.attrs?.state} devices=${kids(u).length}`);
+        for (const d of kids(u)) console.log(`[shape]     device jid=${d.attrs?.jid}`);
     }
 }
 
-const isGroupOffer = node.tag === 'call' && action?.tag === 'offer';
-console.log(`\n[shape] RESULT: ${isGroupOffer ? 'engine emits a real <call><offer>' : 'NOT a call offer'}`);
+// Compare against the authoritative capture:
+//   <call to="<call-id>@call"> <offer call-id call-creator group-jid>
+//     audio(8000) audio(16000) net(medium=3) group_info
+const problemas = [];
+if (action?.tag !== 'offer') problemas.push('a ação não é <offer>');
+const ordem = kids(action).map((c) => c.tag);
+const esperado = ['audio', 'audio', 'net', 'group_info'];
+if (JSON.stringify(ordem) !== JSON.stringify(esperado)) {
+    problemas.push(`ordem dos filhos = ${ordem.join(',')} (esperado ${esperado.join(',')})`);
+}
+if (!action?.attrs?.['call-id']) problemas.push('sem call-id');
+if (!action?.attrs?.['call-creator']) problemas.push('sem call-creator');
+if (!action?.attrs?.['group-jid']) problemas.push('sem group-jid (a call precisa estar amarrada ao grupo)');
+const primeiroAudio = kids(action)[0];
+if (primeiroAudio?.attrs?.rate !== '8000') problemas.push('primeiro audio não é 8000');
+const segundoAudio = kids(action)[1];
+if (segundoAudio?.attrs?.rate !== '16000') problemas.push('segundo audio não é 16000');
+const net = byTag(action, 'net');
+if (net?.attrs?.medium !== '3') problemas.push('net medium não é 3');
+
+console.log('\n[shape] comparacao com a captura autoritativa:');
+if (problemas.length === 0) {
+    console.log('   OK: a forma bate com a captura');
+} else {
+    for (const p of problemas) console.log(`   DIFERENCA: ${p}`);
+}
+
 try { engine.destroy?.(); } catch {}
-process.exit(isGroupOffer ? 0 : 1);
+process.exit(problemas.length === 0 ? 0 : 1);
+

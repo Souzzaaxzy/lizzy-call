@@ -29,6 +29,15 @@ export declare class SignalingBridge {
     attachEngine: (voip: any) => void;
     init: () => Promise<void>;
     sendSignaling: (peerJid: string, callId: string, xmlPayload: Uint8Array) => void;
+    /**
+     * Sends a call stanza and REPORTS failures instead of swallowing them.
+     *
+     * `sendSignaling` queues and discards errors (`catch(() => {})`), which keeps
+     * the engine alive but hides every send failure — the symptom becomes "the
+     * call does not start" with no reason. This variant exists for diagnostics and
+     * tests: same path, but the caller sees the error.
+     */
+    sendSignalingChecked: (peerJid: string, callId: string, xmlPayload: Uint8Array) => Promise<void>;
     processIncomingCall: (node: any, voip: any, activeCallId: string) => void;
     processIncomingReceipt: (node: any, voip: any, activeCallId: string) => void;
     requestTcToken: (jid: string) => Promise<Uint8Array | undefined>;

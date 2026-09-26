@@ -95,6 +95,17 @@ export class SignalingBridge {
             .then(() => this.#doSendSignaling(peerJid, callId, xmlPayload))
             .catch(() => { });
     };
+    /**
+     * Sends a call stanza and REPORTS failures instead of swallowing them.
+     *
+     * `sendSignaling` queues and discards errors (`catch(() => {})`), which keeps
+     * the engine alive but hides every send failure — the symptom becomes "the
+     * call does not start" with no reason. This variant exists for diagnostics and
+     * tests: same path, but the caller sees the error.
+     */
+    sendSignalingChecked = async (peerJid, callId, xmlPayload) => {
+        await this.#doSendSignaling(peerJid, callId, xmlPayload);
+    };
     processIncomingCall = (node, voip, activeCallId) => {
         this.#incomingSignalingQueue = this.#incomingSignalingQueue
             .then(() => this.#doProcessIncomingCall(node, voip, activeCallId))
@@ -206,6 +217,23 @@ export class SignalingBridge {
             const selfLid = this.#sock.authState.creds.me?.lid;
             if (selfLid)
                 voipNode.attrs["call-creator"] = selfLid;
+        }
+        // A GROUP offer is addressed to the CALL OBJECT, never to a peer device.
+        //
+        // The engine emits group offers carrying `group-jid` and a `<group_info>`
+        // roster (measured: `wasm-group-offer-variants`). WhatsApp routes those to
+        // `<call-id>@call`; sending them to a participant's device makes the server
+        // reject the call — `is_group_call_created_on_server: false` with
+        // `call_result: 4`, which is exactly what the owner saw.
+        //
+        // The routing helpers below only understand `@lid` and `@s.whatsapp.net`, so
+        // they must not be applied to the call object.
+        const isGroupOffer = signalingTag === "offer" &&
+            (Boolean(voipNode.attrs?.["group-jid"]) || Boolean(getBinaryNodeChild(voipNode, "group_info")));
+        if (isGroupOffer) {
+            const callObject = `${callId}@call`;
+            await this.#sendCallStanza(callObject, voipNode, signalingTag, effectivePeerJid, peerJid);
+            return;
         }
         // Multi-destination encryption (offer/enc_rekey with <destination>).
         const destination = getBinaryNodeChild(voipNode, "destination");
