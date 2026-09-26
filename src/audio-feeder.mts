@@ -89,6 +89,32 @@ export class AudioFeeder {
       process.stderr.write(`[AudioFeeder] ${chunk.toString().trim()}\n`);
     });
 
+    this.#proc.on("error", (err: NodeJS.ErrnoException) => {
+      // Sem este handler, um `spawn` que falha (ex.: ffmpeg AUSENTE no PATH)
+      // emite `'error'` num EventEmitter sem listener — e o Node LANÇA. Isso
+      // vira `uncaughtException` no bot e o processo REINICIA no meio da call:
+      // era o "bot terminou com erro (código: null). Reiniciando..." depois de
+      // `[CALLP] tocando audio:`.
+      //
+      // Aqui o erro é reportado e o áudio simplesmente não sai, mantendo a call
+      // de pé (e o bot vivo). O operador vê o motivo no log.
+      const code = err?.code || err?.name;
+      if (code === "ENOENT") {
+        process.stderr.write(
+          "[AudioFeeder] ffmpeg NAO encontrado no PATH — o audio nao pode ser decodificado. " +
+          "Instale o ffmpeg (ou defina FFMPEG_PATH) para o !musicap tocar.\n",
+        );
+      } else {
+        process.stderr.write(`[AudioFeeder] falha ao iniciar o ffmpeg (${code}): ${err?.message || err}\n`);
+      }
+      this.#proc = null;
+      this.#procExited = true;
+      this.#queue = [];
+      this.#pending = Buffer.alloc(0);
+      this.#drained = true;
+      try { this.onEnd?.(); } catch { /* o callback nao pode quebrar o chamador */ }
+    });
+
     this.#proc.on("exit", (code) => {
       if (code !== 0 && code !== null) {
         process.stderr.write(`[AudioFeeder] ffmpeg exited with code=${code}\n`);

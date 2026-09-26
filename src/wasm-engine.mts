@@ -797,16 +797,28 @@ export class WasmEngine {
     timestamp?: string;
   }): void => {
     this.#ensureInitialized();
-    this.#instance.handleIncomingSignalingMessage(
-      msg.payload,
-      String(msg.peerPlatform ?? "0"),
-      String(msg.peerAppVersion ?? "0"),
-      String(msg.epochId ?? "0"),
-      String(msg.timestamp ?? "0"),
-      false,
-      String(msg.peerJid),
-      null,
-    );
+    // O último argumento é um `Uint8List` (tcToken). Passar `null` literal
+    // lançava **BindingError** no WASM: medido em `probe-null.mjs` —
+    // `handleSignalingMessage` (que constrói a lista) passa OK, enquanto
+    // `handleGroupUpdate`/`handleEncRekey` com `null` estouravam. Sem a lista o
+    // `group_update` nunca era aplicado (roster e relay ficavam fora do motor) e
+    // o erro derrubava o processamento da stanza — era o `erro ao processar
+    // stanza: BindingError` do log do dono.
+    const tcToken = this.#createUint8List(undefined);
+    try {
+      this.#instance.handleIncomingSignalingMessage(
+        msg.payload,
+        String(msg.peerPlatform ?? "0"),
+        String(msg.peerAppVersion ?? "0"),
+        String(msg.epochId ?? "0"),
+        String(msg.timestamp ?? "0"),
+        false,
+        String(msg.peerJid),
+        tcToken,
+      );
+    } finally {
+      tcToken?.delete?.();
+    }
   };
 
   /**
@@ -825,16 +837,23 @@ export class WasmEngine {
     timestamp?: string;
   }): void => {
     this.#ensureInitialized();
-    this.#instance.handleIncomingSignalingMessage(
-      msg.payload,
-      String(msg.peerPlatform ?? "0"),
-      String(msg.peerAppVersion ?? "0"),
-      String(msg.epochId ?? "0"),
-      String(msg.timestamp ?? "0"),
-      false,
-      String(msg.peerJid),
-      null,
-    );
+    // Mesmo caso do `handleGroupUpdate`: `null` no slot do `Uint8List` gera
+    // BindingError no WASM. Ver o comentário lá.
+    const tcToken = this.#createUint8List(undefined);
+    try {
+      this.#instance.handleIncomingSignalingMessage(
+        msg.payload,
+        String(msg.peerPlatform ?? "0"),
+        String(msg.peerAppVersion ?? "0"),
+        String(msg.epochId ?? "0"),
+        String(msg.timestamp ?? "0"),
+        false,
+        String(msg.peerJid),
+        tcToken,
+      );
+    } finally {
+      tcToken?.delete?.();
+    }
   };
 
   /** Invite one participant into an active call (roster + ring). */
