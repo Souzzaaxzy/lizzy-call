@@ -326,6 +326,19 @@ export class WasmEngine {
             wasmMemory: memory,
             locateFile: () => this.#config.wasmPath,
             onRuntimeInitialized: () => { },
+            // O Emscripten chama `onAbort(motivo)` antes de lancar o RuntimeError.
+            // Sem este hook o motivo do abort vai para o VAZIO: o processo morre por
+            // sinal (o "codigo: null" do log do bot) sem dizer POR QUE. Aqui o motivo
+            // e o stack sao registrados, para o proximo diagnostico ter dado real em
+            // vez de inferencia.
+            onAbort: (motivo) => {
+                const texto = String(motivo?.reason ?? motivo ?? "motivo desconhecido");
+                this.#config.callbacks?.onLog?.("error", `[WASM ABORT] ${texto}`);
+                try {
+                    process.stderr.write(`[WASM ABORT] ${texto}\n`);
+                }
+                catch { /* ignore */ }
+            },
         });
         const [instance] = await Promise.all([readyPromise, workersLoadingPromise]);
         this.#instance = instance;
