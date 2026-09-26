@@ -233,6 +233,8 @@ export class WasmEngine {
     #voipStackInitPromise = null;
     #voipReadyResolver = null;
     #voipReadyPromise = null;
+    /** A própria identidade (para nunca entrar na lista de convidados). */
+    #selfJid = null;
     #workerModulesCode = "";
     #loaderCode = "";
     constructor(config = {}) {
@@ -355,6 +357,8 @@ export class WasmEngine {
     };
     initVoipStack = (selfJid, meUserJid, selfLid) => {
         this.#ensureInitialized();
+        // Guarda a própria identidade para poder filtrá-la das listas de convidados.
+        this.#selfJid = selfJid || selfLid || null;
         if (this.#voipStackInitialized || this.#voipStackInitPromise)
             return;
         this.#voipStackInitPromise = new Promise((resolveInit) => {
@@ -573,9 +577,10 @@ export class WasmEngine {
      */
     startGroupCall = (options) => {
         this.#ensureInitialized();
-        const pn = this.#makeStringList(options.pnUserJids ?? []);
-        const lid = this.#makeStringList(options.lidUserJids ?? []);
-        const devices = this.#makeStringList(options.deviceJidsCsv ?? []);
+        const limpos = this.#semSelf(options.pnUserJids ?? [], options.lidUserJids ?? [], options.deviceJidsCsv ?? []);
+        const pn = this.#makeStringList(limpos.pn);
+        const lid = this.#makeStringList(limpos.lid);
+        const devices = this.#makeStringList(limpos.devices);
         try {
             return this.#instance.startVoipGroupCall(pn, lid, devices, String(options.callId), Boolean(options.isVideo), String(options.groupJid), Boolean(options.isLightWeight ?? false), "", // scheduleId
             options.chatName ?? "", "", // chatIcon
@@ -687,6 +692,63 @@ export class WasmEngine {
         if (!this.#initialized || !this.#instance) {
             throw new Error("WasmEngine not initialized. Call initialize() first.");
         }
+    };
+    /**
+     * Remove a própria identidade das três listas de participantes.
+     *
+     * Medido (`measure-self-in-roster.mjs`): se o JID do próprio cliente vier na
+     * lista que `startVoipGroupCall` recebe, o motor emite **zero** stanzas — a
+     * chamada nunca sobe, sem erro nenhum. O motor já se conhece pelo
+     * `initVoipStack`, então convidado é sempre "os outros".
+     *
+     * ## Por índice, não por lista
+     *
+     * O motor faz ZIP POR ÍNDICE das três listas. Filtrar cada uma isoladamente
+     * desalinharia os participantes (`pn[i]` deixaria de corresponder a
+     * `devices[i]`). Aqui a posição inteira é removida quando qualquer forma dela
+     * for o próprio cliente, e o CSV de devices tem só os devices dele retirados
+     * (`measure-guard.mjs`: sem isso o motor continua mudo).
+     */
+    #semSelf = (pn, lid, devices) => {
+        const selfBare = this.#selfJid ? this.#bareOf(this.#selfJid) : null;
+        if (!selfBare)
+            return { pn, lid, devices };
+        const naoSelf = (v) => {
+            if (typeof v !== 'string' || !v)
+                return true;
+            return this.#bareOf(v) !== selfBare;
+        };
+        const saida = { pn: [], lid: [], devices: [] };
+        const total = Math.max(pn.length, lid.length, devices.length);
+        for (let i = 0; i < total; i += 1) {
+            if (!naoSelf(pn[i]) || !naoSelf(lid[i]))
+                continue;
+            const csv = devices[i];
+            if (typeof csv === 'string' && csv) {
+                const restantes = csv.split(',').filter((d) => naoSelf(d));
+                // Sem devices restantes a entrada É o próprio bot: cai fora inteira.
+                if (!restantes.length)
+                    continue;
+                saida.devices.push(restantes.join(','));
+            }
+            else if (typeof csv === 'string') {
+                saida.devices.push(csv);
+            }
+            if (typeof pn[i] === 'string')
+                saida.pn.push(pn[i]);
+            if (typeof lid[i] === 'string')
+                saida.lid.push(lid[i]);
+        }
+        return saida;
+    };
+    /** JID bare (sem `:device`). */
+    #bareOf = (jid) => {
+        if (typeof jid !== 'string' || !jid)
+            return null;
+        const at = jid.indexOf('@');
+        if (at < 0)
+            return null;
+        return `${jid.slice(0, at).split(':')[0]}@${jid.slice(at + 1)}`;
     };
     #makeStringList = (arr) => {
         const list = new this.#instance.StringList();

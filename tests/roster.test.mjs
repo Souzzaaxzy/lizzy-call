@@ -72,15 +72,23 @@ describe('buildCallRoster', () => {
         assert.deepEqual(a?.devices.map((d) => d.jid), [PEER_A_LID, '242653052539031:1@lid']);
     });
 
-    it('puts the creator first, with its exact device', async () => {
-        const roster = await buildCallRoster([PEER_A_LID], SELF_LID, fakeSock());
-        assert.equal(roster[0]?.jid, SELF_BARE_LID);
-        assert.ok(roster[0]?.devices.some((d) => d.jid === SELF_LID));
+    it('nunca inclui o próprio bot na lista de convidados', async () => {
+        // Regressão medida (`measure-self-in-roster.mjs`): com o JID do bot na
+        // lista, `startVoipGroupCall` emite ZERO stanzas e a chamada nunca sobe.
+        const roster = await buildCallRoster([SELF_BARE_LID, SELF_LID, PEER_A_LID], SELF_LID, fakeSock());
+        const jids = roster.map((u) => u.jid);
+        assert.ok(!jids.includes(SELF_BARE_LID), 'o bot não pode ser convidado de si mesmo');
+        assert.deepEqual(jids, [PEER_A_LID], 'só os outros entram');
+    });
+
+    it('deduplica convidados repetidos', async () => {
+        const roster = await buildCallRoster([PEER_A_LID, PEER_A_LID, PEER_B_LID], SELF_LID, fakeSock());
+        assert.deepEqual(roster.map((u) => u.jid), [PEER_A_LID, PEER_B_LID]);
     });
 
     it('survives a socket that cannot answer the queries', async () => {
         const roster = await buildCallRoster([PEER_A_LID], SELF_LID, {});
-        assert.equal(roster.length, 2, 'o convidado entra mesmo sem PN/devices');
+        assert.equal(roster.length, 1, 'o convidado entra mesmo sem PN/devices');
         const a = roster.find((u) => u.jid === PEER_A_LID);
         assert.ok(a?.devices.length, 'nunca fica sem device (o engine rejeita)');
     });

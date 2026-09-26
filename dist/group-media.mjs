@@ -66,12 +66,27 @@ const EVENT_CALL_ENDED = 2;
  */
 export const buildCallRoster = async (participantes, selfJid, sock, log = () => { }) => {
     const selfBare = bareJid(selfJid) ?? selfJid;
+    // O PRÓPRIO bot NÃO entra na lista de convidados.
+    //
+    // `startVoipGroupCall` recebe os CONVIDADOS; o motor já conhece a si mesmo
+    // pelo `initVoipStack`. Medido (`measure-self-in-roster.mjs`): se o JID do
+    // bot vier também na lista, o motor emite ZERO stanzas — nenhum offer sai e
+    // a chamada nunca sobe. Era uma regressão real: o roster antigo não incluía
+    // o bot, e a versão com identidades resolvidas passou a incluir.
+    const convidados = [...new Set(participantes.filter(Boolean))].filter((jid) => {
+        const bare = bareJid(jid) ?? jid;
+        return bare !== selfBare && bare !== (bareJid(selfJid) ?? selfJid);
+    });
+    const removidos = [...new Set(participantes.filter(Boolean))].length - convidados.length;
+    if (removidos > 0) {
+        log(`[CALLP] ${removidos} entrada(s) do próprio bot removida(s) dos convidados`);
+    }
     // Phone numbers: the LID->PN map lives on the socket's signal repository.
     const pnByLid = new Map();
     try {
         const mapping = sock?.signalRepository?.lidMapping;
         if (mapping?.getPNsForLIDs) {
-            const lids = participantes.filter((j) => String(j).endsWith('@lid'));
+            const lids = convidados.filter((j) => String(j).endsWith('@lid'));
             if (lids.length) {
                 const results = await mapping.getPNsForLIDs(lids.map((j) => bareJid(j) ?? j));
                 for (const entry of results || []) {
@@ -88,7 +103,7 @@ export const buildCallRoster = async (participantes, selfJid, sock, log = () => 
     const devicesByUser = new Map();
     try {
         if (typeof sock?.getUSyncDevices === 'function') {
-            const targets = [selfBare, ...participantes].filter(Boolean);
+            const targets = [selfBare, ...convidados].filter(Boolean);
             const devices = await sock.getUSyncDevices(targets, true, false);
             for (const d of devices || []) {
                 const jid = d?.jid;
@@ -106,44 +121,28 @@ export const buildCallRoster = async (participantes, selfJid, sock, log = () => 
     catch (e) {
         log(`[CALLP] não consegui descobrir devices dos convidados: ${e?.message || e}`);
     }
-    const users = [
-        // The creator's own entry always goes first, with its exact device.
-        {
-            jid: selfBare,
-            bare: selfBare,
-            pn: null,
+    return convidados.map((jid) => {
+        const bare = bareJid(jid) ?? jid;
+        const isLid = String(jid).endsWith('@lid');
+        const pn = isLid ? (pnByLid.get(bare) ?? null) : bare;
+        const discovered = devicesByUser.get(bare) ?? [];
+        return {
+            jid: bare,
+            bare,
+            pn,
             state: 'outgoing',
             type: null,
             connected: false,
-            devices: [{ jid: selfJid, pid: undefined, platform: null, capabilityVersion: 1 }]
-        },
-        ...participantes.map((jid) => {
-            const bare = bareJid(jid) ?? jid;
-            const isLid = String(jid).endsWith('@lid');
-            const pn = isLid ? (pnByLid.get(bare) ?? null) : bare;
-            const discovered = devicesByUser.get(bare) ?? [];
-            return {
-                jid: bare,
-                bare,
-                pn,
-                state: 'outgoing',
-                type: null,
-                connected: false,
-                // Fall back to the account JID when discovery found nothing, so
-                // the entry is never device-less (the engine rejects those).
-                devices: (discovered.length ? discovered : [bare]).map((d) => ({
-                    jid: d,
-                    pid: undefined,
-                    platform: null,
-                    capabilityVersion: undefined
-                }))
-            };
-        })
-    ];
-    const semPn = users.filter((u) => u.jid !== selfBare && !u.pn).length;
-    if (semPn)
-        log(`[CALLP] ${semPn} convidado(s) sem PN conhecido (entram só como LID)`);
-    return users;
+            // Fall back to the account JID when discovery found nothing, so the
+            // entry is never device-less (the engine rejects those).
+            devices: (discovered.length ? discovered : [bare]).map((d) => ({
+                jid: d,
+                pid: undefined,
+                platform: null,
+                capabilityVersion: undefined
+            }))
+        };
+    });
 };
 /**
  * Owns every group-call media session in this process.
