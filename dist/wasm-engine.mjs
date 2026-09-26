@@ -381,6 +381,16 @@ export class WasmEngine {
                         throw modernErr;
                     }
                 }
+                // `initVoipStack` returns synchronously and the WASM has no
+                // `onVoipReady` callback — the name does not appear anywhere in
+                // `worker-modules.js` (verified). Waiting for that signal therefore cost
+                // the ENTIRE timeout on every call, measured at 15s, which is what froze
+                // the bot: the handler held for 46s and no other command ran.
+                //
+                // The stack is usable as soon as the synchronous init returns, so that is
+                // the readiness signal. The resolver is still called through, so a future
+                // WASM build that does emit the callback keeps working.
+                this.#voipReadyResolver?.();
                 Promise.race([
                     this.#voipReadyPromise,
                     new Promise((r) => setTimeout(() => {

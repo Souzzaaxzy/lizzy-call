@@ -184,18 +184,14 @@ export class GroupCallMedia {
             this.#log(`[CALLP] midia: engine criou a call ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
             // Media readiness needs the server's roster + relay. Wait a bounded
             // time and report honestly if it never arrives.
-            const ready = await this.#waitForMedia(grupo, MEDIA_WAIT_MS);
-            if (!ready.ready) {
-                media.aviso = ready.reason ?? 'sem_midia';
-                media.stage = 'aguardando_roster';
-                return {
-                    ok: true,
-                    callId: media.callId,
-                    aviso: `Chamada aberta, mas a mídia ainda não está pronta (${ready.reason ?? 'sem motivo'}).`,
-                    stage: media.stage
-                };
-            }
-            media.stage = 'pronta';
+            // NÃO espera a mídia aqui.
+            //
+            // Esperar bloqueava o comando por até 30s (medido: 46,5s no total), e
+            // enquanto o handler não retorna o bot fica sem responder a mais nada —
+            // foi isso que o dono viu como "o bot travou e depois voltou dizendo
+            // que iniciou". A chamada já foi criada; a prontidão da mídia chega
+            // sozinha pelo `group_update` e é reportada quando acontecer.
+            void this.#acompanharMidia(grupo);
             return { ok: true, callId: media.callId, stage: media.stage };
         }
         catch (e) {
@@ -286,6 +282,27 @@ export class GroupCallMedia {
         }
         throw new Error('a pilha de VoIP não ficou pronta');
     };
+    /**
+     * Acompanha a prontidão da mídia DEPOIS que o comando já respondeu.
+     *
+     * Não segura o handler: só registra no log quando a mídia fica pronta (ou
+     * quando o tempo acaba), para o operador saber o que aconteceu sem que o bot
+     * pare de responder nesse meio tempo.
+     */
+    #acompanharMidia = async (grupo) => {
+        const ready = await this.#waitForMedia(grupo, MEDIA_WAIT_MS);
+        const media = this.#sessions.get(grupo);
+        if (!media)
+            return;
+        if (ready.ready) {
+            media.stage = 'pronta';
+            this.#log(`[CALLP] mídia PRONTA no grupo ${grupo} — \`!musicap\` já pode tocar`);
+        }
+        else {
+            media.aviso = ready.reason ?? 'sem_midia';
+            this.#log(`[CALLP] mídia não ficou pronta em ${Math.round(MEDIA_WAIT_MS / 1000)}s (${media.aviso}); a chamada segue aberta`);
+        }
+    };
     #waitForMedia = (grupo, timeoutMs) => {
         const media = this.#sessions.get(grupo);
         if (!media)
@@ -309,6 +326,10 @@ export class GroupCallMedia {
         const media = this.#sessions.get(grupo);
         if (!media)
             return;
+        // O bridge engole os próprios erros (`catch(() => {})`); aqui pelo menos
+        // registramos que a sinalização saiu, senão uma falha de envio fica
+        // invisível e o sintoma vira "a chamada não inicia" sem motivo aparente.
+        this.#log(`[CALLP] sinalização -> ${peerJid} (${xmlPayload?.length ?? 0} bytes)`);
         void media.signaling.sendSignaling(peerJid, callId || media.callId, xmlPayload);
     };
     #onIncomingCallStanza = async (grupo, node) => {
