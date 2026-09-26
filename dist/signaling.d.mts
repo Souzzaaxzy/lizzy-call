@@ -24,6 +24,10 @@ export type SignalingBridgeConfig = {
 };
 export declare class SignalingBridge {
     #private;
+    /** Diagnostico: chamado quando o ack de uma stanza NAO chega. */
+    onAckMissing?: (stanzaId: string, tag: string, routeTo: string) => void;
+    /** Diagnostico: chamado quando o ack chega (com o error do servidor). */
+    onAckReceived?: (stanzaId: string, tag: string, error: string) => void;
     constructor(config: SignalingBridgeConfig);
     /** Hand the WASM engine in so we can dispatch ack callbacks back to it. */
     attachEngine: (voip: any) => void;

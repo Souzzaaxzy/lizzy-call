@@ -67,6 +67,10 @@ export class SignalingBridge {
     #remoteObfuscatedPeerByCallId = new Map();
     #remoteXmppRoutePeerByCallId = new Map();
     #incomingCallPeerById = new Map();
+    /** Diagnostico: chamado quando o ack de uma stanza NAO chega. */
+    onAckMissing;
+    /** Diagnostico: chamado quando o ack chega (com o error do servidor). */
+    onAckReceived;
     #outgoingSignalingQueue = Promise.resolve(undefined);
     #incomingSignalingQueue = Promise.resolve(undefined);
     constructor(config) {
@@ -301,9 +305,22 @@ export class SignalingBridge {
         });
         void (async () => {
             try {
-                const ackNode = await this.#sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS);
-                if (!ackNode || !this.#voip)
+                // O socket precisa saber esperar por um ack. Sem isso o setup da call
+                // nunca conclui, e o sintoma vira 'a call fica carregando'.
+                if (typeof this.#sock.waitForMessage !== 'function') {
+                    this.onAckMissing?.(stanzaId, signalingTag, routeTo);
                     return;
+                }
+                const ackNode = await this.#sock.waitForMessage(stanzaId, ACK_TIMEOUT_MS);
+                if (!ackNode) {
+                    // O motor PRECISA do ack para concluir o setup. Sem ele, o servidor
+                    // nunca confirma e a call morre com call_setup_error_type=1.
+                    this.onAckMissing?.(stanzaId, signalingTag, routeTo);
+                    return;
+                }
+                if (!this.#voip)
+                    return;
+                this.onAckReceived?.(stanzaId, signalingTag, ackNode.attrs?.error ?? '0');
                 const { encodeBinaryNode } = this.#baileys;
                 const ackPayload = Buffer.from(encodeBinaryNode(ackNode)).toString("base64");
                 const tcToken = await this.ensureTcToken(effectivePeerJid, callbackPeerJid);

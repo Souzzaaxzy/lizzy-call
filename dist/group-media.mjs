@@ -140,6 +140,15 @@ export class GroupCallMedia {
             media.signaling = new SignalingBridge({ sock });
             await media.signaling.init();
             media.signaling.attachEngine(engine);
+            // Diagnostico do ack: o motor precisa dele para concluir o setup.
+            // Sem isso, uma confirmacao que nao chega fica invisivel e a call
+            // simplesmente morre alguns segundos depois.
+            media.signaling.onAckMissing = (stanzaId, tag, routeTo) => {
+                this.#log(`[CALLP] SEM ACK para ${tag} (id=${stanzaId}, destino=${routeTo}) — o motor nao conclui o setup`);
+            };
+            media.signaling.onAckReceived = (stanzaId, tag, error) => {
+                this.#log(`[CALLP] ack de ${tag} (id=${stanzaId}) error=${error}`);
+            };
             engine.initVoipStack(selfJid, bareJid(selfJid) ?? selfJid, selfJid);
             await this.#waitStack(engine, STACK_READY_MS);
             // Take over the call: from here on, incoming call stanzas feed the
@@ -411,7 +420,26 @@ export class GroupCallMedia {
             }
         }
         else if (type === EVENT_CALL_STATE) {
-            this.#log(`[CALLP] estado da call: ${data ?? ''}`);
+            // O objeto de estado e' enorme; aqui so' os campos que dizem se a call
+            // realmente existe no servidor. Sem eles, um 'call_result: 4' passa
+            // invisivel e o sintoma vira 'nao inicia' sem motivo.
+            let resumo = data ?? '';
+            try {
+                const info = JSON.parse(String(data)).call_info ?? {};
+                resumo = [
+                    `state=${info.call_state}`,
+                    `result=${info.call_result}`,
+                    `setupError=${info.call_setup_error_type}`,
+                    `noServidor=${info.is_group_call_created_on_server}`,
+                    `participantes=${info.participant_count}`,
+                    `grupo=${info.is_group_call}`
+                ].join(' ');
+                if (info.call_result && info.call_result !== 0) {
+                    this.#log(`[CALLP] A CALL FALHOU NO SETUP (result=${info.call_result}, setupError=${info.call_setup_error_type})`);
+                }
+            }
+            catch { /* loga o bruto se nao parsear */ }
+            this.#log(`[CALLP] estado da call: ${resumo}`);
         }
         else if (type === EVENT_CALL_ENDED) {
             this.#log('[CALLP] call encerrada pelo servidor');
