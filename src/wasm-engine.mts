@@ -388,6 +388,31 @@ export class WasmEngine {
       wasmMemory: memory,
       locateFile: () => this.#config.wasmPath,
       onRuntimeInitialized: () => {},
+      // ── UM SÓ POOL DE WORKERS, NÃO DOIS ────────────────────────────────────
+      //
+      // Medido (`contar-workers.mjs`, contando /proc/self/task):
+      //
+      //   ANTES  threads= 7   rss= 51 MB
+      //   DEPOIS threads=33   rss=644 MB     -> 26 workers = 6 (nosso) + 20 (do WASM)
+      //
+      // O `ThreadPoolManager` do WASM tem o PRÓPRIO pool, e o default dele é 20:
+      //
+      //   for (var e = typeof h.pthreadPoolSizeOverride == "number"
+      //              ? h.pthreadPoolSizeOverride : 20; e--;)
+      //       nn.allocateUnusedWorker();
+      //
+      // O nosso `#initPThreadPool` cria OUTRO pool (`PTHREAD_POOL_SIZE`) e nunca
+      // avisava o WASM — então os dois coexistiam. E o pool do WASM é o que
+      // falha: ele tenta preaquecer por 15s e desiste, com o log do próprio
+      // motor:
+      //
+      //   voip: ThreadPoolManager: pthread worker prewarm timed out after 15000ms;
+      //   continuing with 0 ready workers
+      //
+      // Zero workers prontos é um estado degradado para a mídia — e o dobro de
+      // workers é o dobro de memória (~900 MB medidos). Passando o override, o
+      // WASM usa o NOSSO pool (que nós carregamos e cuja prontidão esperamos).
+      pthreadPoolSizeOverride: PTHREAD_POOL_SIZE,
       // O Emscripten chama `onAbort(motivo)` antes de lancar o RuntimeError.
       // Sem este hook o motivo do abort vai para o VAZIO: o processo morre por
       // sinal (o "codigo: null" do log do bot) sem dizer POR QUE. Aqui o motivo
