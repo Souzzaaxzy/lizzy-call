@@ -355,6 +355,21 @@ export class GroupCallMedia {
         participantes?: string[];
         sock: any;
         groupInfo?: BinaryNode | null;
+        /**
+         * Inicia um CHAT DE VOZ em vez de uma chamada comum.
+         *
+         * Evidência no WASM instalado (`assets/wasm/whatsapp.wasm`): existe um
+         * caminho próprio `voice_chat.cc` com `is_voice_chat`, `is_lightweight`,
+         * `lightweight-key` e `is_scheduled_call`, e a string
+         * `preprocess_offer: sending missed call event for voice chat init`.
+         *
+         * O `startVoipGroupCall` do motor tem um parâmetro dedicado a isso
+         * (`isLightWeight`), que este pacote repassava SEMPRE `false`. Com ele em
+         * `true` o motor declara o offer como voice chat e o servidor trata a
+         * chamada como o chat de voz do grupo (entra sem tocar), em vez da
+         * chamada que toca para todo mundo.
+         */
+        isLightWeight?: boolean;
     }): Promise<EntrarNaCallResult> => {
         const { grupo, sock } = options;
         if (this.#sessions.has(grupo)) {
@@ -482,17 +497,20 @@ export class GroupCallMedia {
             );
 
             const novoCallId = options.callId || generateCallId();
+            const voiceChat = options.isLightWeight === true;
             engine.startGroupCall({
                 groupJid: grupo,
                 pnUserJids: lists.pnUserJids,
                 lidUserJids: lists.lidUserJids,
                 deviceJidsCsv: lists.deviceJidsCsv,
                 callId: novoCallId,
-                isVideo: false
+                isVideo: false,
+                // `true` = chat de voz (entra sem tocar). Ver o doc da opção.
+                isLightWeight: voiceChat
             });
             media.callId = novoCallId;
             media.stage = 'aguardando_roster';
-            this.#log(`[CALLP] midia: engine criou a call ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
+            this.#log(`[CALLP] midia: engine criou a ${voiceChat ? 'VOICE CHAT' : 'call'} ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
 
             // Media readiness needs the server's roster + relay. Wait a bounded
             // time and report honestly if it never arrives.

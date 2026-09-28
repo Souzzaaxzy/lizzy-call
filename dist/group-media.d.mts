@@ -153,6 +153,21 @@ export declare class GroupCallMedia {
         participantes?: string[];
         sock: any;
         groupInfo?: BinaryNode | null;
+        /**
+         * Inicia um CHAT DE VOZ em vez de uma chamada comum.
+         *
+         * Evidência no WASM instalado (`assets/wasm/whatsapp.wasm`): existe um
+         * caminho próprio `voice_chat.cc` com `is_voice_chat`, `is_lightweight`,
+         * `lightweight-key` e `is_scheduled_call`, e a string
+         * `preprocess_offer: sending missed call event for voice chat init`.
+         *
+         * O `startVoipGroupCall` do motor tem um parâmetro dedicado a isso
+         * (`isLightWeight`), que este pacote repassava SEMPRE `false`. Com ele em
+         * `true` o motor declara o offer como voice chat e o servidor trata a
+         * chamada como o chat de voz do grupo (entra sem tocar), em vez da
+         * chamada que toca para todo mundo.
+         */
+        isLightWeight?: boolean;
     }) => Promise<EntrarNaCallResult>;
     /**
      * Play a local audio file into the group call.

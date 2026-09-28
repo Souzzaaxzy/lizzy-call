@@ -364,17 +364,20 @@ export class GroupCallMedia {
             this.#log(`[CALLP] roster: ${roster.length} convidados, ` +
                 `pn=${lists.pnUserJids.length} lid=${lists.lidUserJids.length} devices=${lists.deviceJidsCsv.filter(Boolean).length}`);
             const novoCallId = options.callId || generateCallId();
+            const voiceChat = options.isLightWeight === true;
             engine.startGroupCall({
                 groupJid: grupo,
                 pnUserJids: lists.pnUserJids,
                 lidUserJids: lists.lidUserJids,
                 deviceJidsCsv: lists.deviceJidsCsv,
                 callId: novoCallId,
-                isVideo: false
+                isVideo: false,
+                // `true` = chat de voz (entra sem tocar). Ver o doc da opção.
+                isLightWeight: voiceChat
             });
             media.callId = novoCallId;
             media.stage = 'aguardando_roster';
-            this.#log(`[CALLP] midia: engine criou a call ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
+            this.#log(`[CALLP] midia: engine criou a ${voiceChat ? 'VOICE CHAT' : 'call'} ${novoCallId} no grupo ${grupo} (${participantes.length} convidados)`);
             // Media readiness needs the server's roster + relay. Wait a bounded
             // time and report honestly if it never arrives.
             // NÃO espera a mídia aqui.
