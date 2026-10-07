@@ -35,7 +35,7 @@ const CALL_OBJECT = `${CALL_ID}@call`;
 
 console.log('[route] helpers de roteamento, aplicados ao endereço da call de grupo:');
 // `init()` would need a real socket, but the helpers only need `#baileys`.
-const baileys = await import('@whiskeysockets/baileys');
+const baileys = await import('@itsliaaa/baileys');
 bridge['#baileys'] = baileys;
 
 const toBare = bridge['#toBareJid'];

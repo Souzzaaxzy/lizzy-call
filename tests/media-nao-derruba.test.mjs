@@ -24,7 +24,7 @@ import { pathToFileURL } from 'node:url';
 const raiz = path.resolve(process.cwd());
 const { WasmEngine } = await import(pathToFileURL(path.join(raiz, 'dist/wasm-engine.mjs')).href);
 const { AudioFeeder } = await import(pathToFileURL(path.join(raiz, 'dist/audio-feeder.mjs')).href);
-const baileys = await import('@whiskeysockets/baileys');
+const baileys = await import('@itsliaaa/baileys');
 
 const SELF_PN = '5511900000001@s.whatsapp.net';
 const SELF_LID = '100000000000001:14@lid';

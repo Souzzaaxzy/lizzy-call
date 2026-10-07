@@ -64,7 +64,7 @@ const makeSock = () => {
 
 /** The group offer the engine emits, wrapped the way the bridge receives it. */
 const groupOfferPayload = async () => {
-    const baileys = await import('@whiskeysockets/baileys');
+    const baileys = await import('@itsliaaa/baileys');
     const { encodeBinaryNode } = baileys;
     return encodeBinaryNode({
         tag: 'offer',

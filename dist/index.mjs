@@ -23,11 +23,10 @@ const SHA256_LEN = 32;
 /**
  * The Baileys module, loaded lazily.
  *
- * Not hard-coded to one distribution: this SDK runs with the upstream
- * `@whiskeysockets/baileys` and with forks that expose the same API under a
- * different name (this project uses `@itsliaaa/baileys`).
+ * This SDK ships inside the `@souzzaaxzy/baileys` fork (published as
+ * `@itsliaaa/baileys`), so both names are tried to cover the install layouts.
  */
-const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@whiskeysockets/baileys"];
+const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@souzzaaxzy/baileys"];
 const loadBaileys = async () => {
     const tried = [];
     for (const name of BAILEYS_PACKAGE_NAMES) {

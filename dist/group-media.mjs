@@ -453,13 +453,13 @@ export class GroupCallMedia {
      * The Baileys module, loaded lazily.
      *
      * It is a peer dependency and has no type declarations here, so the import
-     * is dynamic and untyped on purpose. Both the fork name and the upstream
-     * name are tried, so the module works in either setup.
+     * is dynamic and untyped on purpose. Both names the fork ships under are
+     * tried, so the module works in either install layout.
      */
     #baileys = async () => {
         if (this.#baileysModule)
             return this.#baileysModule;
-        const names = ['@itsliaaa/baileys', '@whiskeysockets/baileys'];
+        const names = ['@itsliaaa/baileys', '@souzzaaxzy/baileys'];
         for (const name of names) {
             try {
                 this.#baileysModule = await import(name);

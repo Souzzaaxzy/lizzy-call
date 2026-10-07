@@ -84,7 +84,7 @@ const makeSock = () => {
 };
 
 const offerPayload = async () => {
-    const baileys = await import('@whiskeysockets/baileys');
+    const baileys = await import('@itsliaaa/baileys');
     return baileys.encodeBinaryNode({
         tag: 'offer',
         attrs: { 'call-id': CALL_ID, 'call-creator': SELF_LID, 'group-jid': GROUP },

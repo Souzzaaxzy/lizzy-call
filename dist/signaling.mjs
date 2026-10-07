@@ -15,12 +15,10 @@ let _baileysModule = null;
 /**
  * The Baileys module, loaded lazily.
  *
- * The package name is NOT hard-coded to one distribution: this SDK is used both
- * with the upstream `@whiskeysockets/baileys` and with forks that ship the same
- * API under a different name (this project uses `@itsliaaa/baileys`). Trying
- * both keeps the SDK usable in either setup instead of failing on a name.
+ * This SDK ships inside the `@souzzaaxzy/baileys` fork (published as
+ * `@itsliaaa/baileys`), so both names are tried to cover the install layouts.
  */
-const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@whiskeysockets/baileys"];
+const BAILEYS_PACKAGE_NAMES = ["@itsliaaa/baileys", "@souzzaaxzy/baileys"];
 const loadBaileys = async () => {
     if (_baileysModule)
         return _baileysModule;

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 
 import { SignalingBridge } from '../dist/signaling.mjs';
 
-const baileys = await import('@whiskeysockets/baileys');
+const baileys = await import('@itsliaaa/baileys');
 const { encodeBinaryNode } = baileys;
 
 const CALL_ID = 'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';

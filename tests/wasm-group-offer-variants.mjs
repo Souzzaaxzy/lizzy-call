@@ -12,7 +12,7 @@
 
 import { WasmEngine } from '../dist/wasm-engine.mjs';
 
-const baileys = await import('@whiskeysockets/baileys');
+const baileys = await import('@itsliaaa/baileys');
 const { decodeBinaryNode } = baileys;
 
 const SELF_PN = '5511900000001@s.whatsapp.net';

@@ -1,12 +1,12 @@
 /**
- * The SDK must load whichever Baileys distribution is installed.
+ * The SDK must load the Baileys fork it ships with.
  *
- * The upstream package hard-coded `@whiskeysockets/baileys`, so in a project
- * that uses a fork (`@itsliaaa/baileys`, as this bot does) every call failed with
- * "Could not import @whiskeysockets/baileys. Install it as a peer dependency."
+ * This SDK runs inside `@souzzaaxzy/baileys` (published as `@itsliaaa/baileys`).
+ * Earlier it also tried the upstream `@itsliaaa/baileys` as a fallback —
+ * the wrong library for this project. The loaders now try only the fork names.
  *
- * This test pins the behaviour: the loader tries both names and reports what it
- * actually tried when neither is present.
+ * This test pins the behaviour: the loader tries the fork names (and not the
+ * upstream one), and reports what it actually tried when neither is present.
  *
  * Run: node --test tests/baileys-loader.test.mjs
  */
@@ -21,12 +21,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
 
 describe('Baileys loader', () => {
-    it('tries the fork name as well as upstream', () => {
-        for (const file of ['signaling.mjs', 'index.mjs']) {
+    it('tries the fork names and NOT the upstream package', () => {
+        for (const file of ['signaling.mjs', 'index.mjs', 'group-media.mjs']) {
             const src = fs.readFileSync(path.join(ROOT, 'dist', file), 'utf-8');
-            assert.match(src, /@itsliaaa\/baileys/, `${file} tenta o nome da fork`);
-            assert.match(src, /@whiskeysockets\/baileys/, `${file} tenta o upstream`);
-            // The old shape threw on the first failure; the new one must not.
+            assert.match(src, /@itsliaaa\/baileys/, `${file} tenta o nome publicado da fork`);
+            assert.doesNotMatch(
+                src,
+                /@whiskeysockets\/baileys/,
+                `${file} NAO pode tentar o upstream (fork antiga)`
+            );
             assert.doesNotMatch(
                 src,
                 /Could not import @whiskeysockets\/baileys\. Install it as a peer dependency\./,
