@@ -42,7 +42,12 @@ export declare class SignalingBridge {
     /** Hand the WASM engine in so we can dispatch ack callbacks back to it. */
     attachEngine: (voip: any) => void;
     init: () => Promise<void>;
-    sendSignaling: (peerJid: string, callId: string, xmlPayload: Uint8Array) => void;
+    /**
+     * @param isGroupCall Numa call de GRUPO **tudo** e' enderecado ao OBJETO da
+     *   call (`<call-id>@call`), nunca ao device de um participante -- inclusive o
+     *   `<terminate>`. Ver `#doSendSignaling`.
+     */
+    sendSignaling: (peerJid: string, callId: string, xmlPayload: Uint8Array, isGroupCall?: boolean) => void;
     /**
      * Sends a call stanza and REPORTS failures instead of swallowing them.
      *
@@ -51,7 +56,7 @@ export declare class SignalingBridge {
      * call does not start" with no reason. This variant exists for diagnostics and
      * tests: same path, but the caller sees the error.
      */
-    sendSignalingChecked: (peerJid: string, callId: string, xmlPayload: Uint8Array) => Promise<void>;
+    sendSignalingChecked: (peerJid: string, callId: string, xmlPayload: Uint8Array, isGroupCall?: boolean) => Promise<void>;
     processIncomingCall: (node: any, voip: any, activeCallId: string) => void;
     processIncomingReceipt: (node: any, voip: any, activeCallId: string) => void;
     requestTcToken: (jid: string) => Promise<Uint8Array | undefined>;

@@ -133,9 +133,19 @@ export class SignalingBridge {
     };
   };
 
-  sendSignaling = (peerJid: string, callId: string, xmlPayload: Uint8Array): void => {
+  /**
+   * @param isGroupCall Numa call de GRUPO **tudo** e' enderecado ao OBJETO da
+   *   call (`<call-id>@call`), nunca ao device de um participante -- inclusive o
+   *   `<terminate>`. Ver `#doSendSignaling`.
+   */
+  sendSignaling = (
+    peerJid: string,
+    callId: string,
+    xmlPayload: Uint8Array,
+    isGroupCall = false
+  ): void => {
     this.#outgoingSignalingQueue = this.#outgoingSignalingQueue
-      .then(() => this.#doSendSignaling(peerJid, callId, xmlPayload))
+      .then(() => this.#doSendSignaling(peerJid, callId, xmlPayload, isGroupCall))
       .catch(() => {});
   };
 
@@ -147,8 +157,13 @@ export class SignalingBridge {
    * call does not start" with no reason. This variant exists for diagnostics and
    * tests: same path, but the caller sees the error.
    */
-  sendSignalingChecked = async (peerJid: string, callId: string, xmlPayload: Uint8Array): Promise<void> => {
-    await this.#doSendSignaling(peerJid, callId, xmlPayload);
+  sendSignalingChecked = async (
+    peerJid: string,
+    callId: string,
+    xmlPayload: Uint8Array,
+    isGroupCall = false
+  ): Promise<void> => {
+    await this.#doSendSignaling(peerJid, callId, xmlPayload, isGroupCall);
   };
 
   processIncomingCall = (node: any, voip: any, activeCallId: string): void => {
@@ -255,7 +270,12 @@ export class SignalingBridge {
 
   // ─── private — outbound signaling ─────────────────────────────────────────
 
-  #doSendSignaling = async (peerJid: string, callId: string, xmlPayload: Uint8Array): Promise<void> => {
+  #doSendSignaling = async (
+    peerJid: string,
+    callId: string,
+    xmlPayload: Uint8Array,
+    isGroupCall = false
+  ): Promise<void> => {
     const { decodeBinaryNode, getBinaryNodeChild } = this.#baileys;
 
     const rawPayload = Buffer.from(xmlPayload);
@@ -341,10 +361,23 @@ export class SignalingBridge {
       }
     }
 
+    // ## O DESTINO DE UMA CALL DE GRUPO: o OBJETO da call, nao um device
+    //
+    // Medido na referencia que funciona (`zapo`, `call-stanza.js`):
+    //
+    //   return isGroupCall ? toCallServerJid(callId) : peerJid;
+    //
+    // Numa call de GRUPO **tudo** vai para `<call-id>@call`. Mandar o
+    // `<terminate>` para o device de um participante NAO tira este lado da call:
+    // o bot ficava preso nela (o usuario saia, o bot continuava) e so saia quando
+    // o servidor o derrubava por tempo -- o "so sai beeem depois" relatado.
+    //
     // Non-encrypted signaling (accept, transport, terminate, etc.).
-    const routeTo = signalingTag !== "offer" && signalingTag !== "enc_rekey"
-      ? this.#toBareJid(effectivePeerJid)
-      : this.#toCallDeviceJid(effectivePeerJid);
+    const routeTo = isGroupCall
+      ? `${callId}@call`
+      : signalingTag !== "offer" && signalingTag !== "enc_rekey"
+        ? this.#toBareJid(effectivePeerJid)
+        : this.#toCallDeviceJid(effectivePeerJid);
     await this.#sendCallStanza(routeTo, voipNode, signalingTag, effectivePeerJid, peerJid);
   };
 

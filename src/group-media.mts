@@ -684,7 +684,9 @@ export class GroupCallMedia {
         // registramos que a sinalização saiu, senão uma falha de envio fica
         // invisível e o sintoma vira "a chamada não inicia" sem motivo aparente.
         this.#log(`[CALLP] sinalização -> ${peerJid} (${xmlPayload?.length ?? 0} bytes)`);
-        void media.signaling.sendSignaling(peerJid, callId || media.callId, xmlPayload);
+        // TODA sinalizacao desta sessao e' de uma CALL DE GRUPO (o motor foi
+        // subido com um grupo): o destino e' o OBJETO da call, nao um device.
+        void media.signaling.sendSignaling(peerJid, callId || media.callId, xmlPayload, true);
     };
 
     #onIncomingCallStanza = async (grupo: string, node: any): Promise<void> => {
