@@ -82,6 +82,31 @@ const RAW_UDP_MODE = (() => {
 const RAW_UDP_RETURN_PATH_TIMEOUT_MS = 5000;
 /** Quanto tempo uma leg já confirmada pode ficar sem mídia de volta, em ms. */
 const RAW_UDP_RETURN_PATH_STALL_MS = 10000;
+/**
+ * Quantas vezes uma leg UDP cru é RE-DIALADA antes de desistir.
+ *
+ * ## O defeito MEDIDO (a call caindo de ~3 em ~3 segundos, com bipes)
+ *
+ * O relay de um call de GRUPO frequentemente NÃO devolve mídia enquanto o outro
+ * lado não entra — e às vezes o relay simplesmente não responde naquele caminho.
+ * A primeira versão desta leg tratava isso como falha terminal: fechava e
+ * derrubava a call. O motor então reabria, o relay voltava a não responder, e o
+ * ciclo se repetia — era a queda periódica com o bipe de entrada/saída.
+ *
+ * A referência que funciona (`@zapo-js/voip-media`) NÃO faz isso: ela **re-diala**
+ * a leg parada (`redialStalledLegs`) e tenta a **porta de fallback**
+ * (`registerOnFallbackPort`), com backoff e um teto de tentativas. Só depois de
+ * esgotar é que a call é considerada perdida.
+ *
+ * Aqui a leg faz o mesmo: re-diala com backoff até `RAW_UDP_MAX_REDIALS`, e só
+ * então reporta a falha (que aí sim derruba a call). `0` desliga a re-dial.
+ */
+const RAW_UDP_MAX_REDIALS = (() => {
+  const n = Number(process.env.CALL_RAW_UDP_MAX_REDIALS ?? "4");
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
+})();
+/** Backoff base da re-dial, em ms (dobra a cada tentativa). */
+const RAW_UDP_REDIAL_BASE_MS = 1000;
 
 const RELAY_DTLS_FINGERPRINT =
   "F9:CA:0C:98:A3:CC:71:D6:42:CE:5A:E2:53:D2:15:20:D3:1B:BA:D8:57:A4:F0:AF:BE:0B:FB:F3:6B:0C:A0:68";
@@ -162,6 +187,7 @@ class RawUdpLeg {
   #returnPathTimer: NodeJS.Timeout | null = null;
   #returnPathSeen = false;
   #lastInboundAt = 0;
+  #redials = 0;
 
   constructor(
     private readonly options: {
@@ -241,6 +267,33 @@ class RawUdpLeg {
     return true;
   }
 
+  /** Tentativas de re-dial já feitas (diagnóstico). */
+  get redials(): number {
+    return this.#redials;
+  }
+
+  /**
+   * Re-abre a leg: fecha o socket atual e disca de novo o MESMO ip/porta.
+   *
+   * Não mexe em `#closed` (a leg segue viva) e NÃO avisa `onFailure` — a call
+   * continua de pé enquanto o relay não responder.
+   */
+  #reabrir(): void {
+    const socket = this.#socket;
+    this.#socket = null;
+    this.#opened = false;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        /* nada a fazer */
+      }
+    }
+    this.#returnPathSeen = false;
+    this.#lastInboundAt = 0;
+    this.open();
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -272,8 +325,24 @@ class RawUdpLeg {
         this.#armReturnPathTimer(RAW_UDP_RETURN_PATH_STALL_MS - idleMs);
         return;
       }
+      // RE-DIAL antes de desistir. Sem isto a leg morria e derrubava a call — e o
+      // motor reabria, o relay voltava a não responder, e a call ficava caindo de
+      // ~3 em ~3 s com os bipes de entrada/saída. A referência que funciona
+      // (`@zapo-js/voip-media`) re-diala a leg parada com backoff; aqui é igual.
+      if (this.#redials < RAW_UDP_MAX_REDIALS) {
+        this.#redials += 1;
+        const espera = RAW_UDP_REDIAL_BASE_MS * 2 ** (this.#redials - 1);
+        this.options.onLog?.(
+          `[RELAY] udp cru: sem mídia de volta — re-dial ${this.#redials}/${RAW_UDP_MAX_REDIALS} em ${espera} ms`
+        );
+        setTimeout(() => {
+          if (this.#closed) return;
+          this.#reabrir();
+        }, espera).unref?.();
+        return;
+      }
       this.options.onLog?.(
-        "[RELAY] udp cru: leg fechada, nenhuma mídia no caminho de volta"
+        `[RELAY] udp cru: leg fechada apos ${this.#redials} re-dial(is), nenhuma mídia no caminho de volta`
       );
       this.#fail("raw_udp_no_return_path");
     }, timeoutMs);

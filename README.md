@@ -77,9 +77,34 @@ The transport now opens a **raw UDP leg** for those relays (a connected
 | `0` / `off` | raw UDP disabled (WebRTC only) |
 
 Because sending is what elects a raw leg, it **polices its own return path**: if
-media goes out and none comes back, the leg closes (`raw_udp_no_return_path`)
-instead of pretending the call is up. The leg uses the relay's **advertised
-port** (a raw leg keeps the advertised one; only WebRTC legs move to 3480).
+media goes out and none comes back, the leg is **re-dialled** (with backoff, up
+to `CALL_RAW_UDP_MAX_REDIALS`, default 4) instead of closing. Only after the
+redials are exhausted does it fail — the reference (`redialStalledLegs`) does
+the same. Closing on the first silent window dropped the call, the engine
+reopened it, and the call fell in a loop (the periodic drop with the join/leave
+beeps). The leg uses the relay's **advertised port** (a raw leg keeps the
+advertised one; only WebRTC legs move to 3480).
+
+## Media gate: the engine asking for capture means the call is alive
+
+The engine ends a call that transmits no media — the binary says it outright:
+
+```
+ERROR: No media being transmitted
+mvp->enable_media_timeout_terminate_reason
+```
+
+So the capture gate must never block on a *transient* call state. `startCaptureJS`
+only arrives when the engine wants media from this side: if a transient
+`state=0 result=4` (the initial, not-connected state) is misread as a failure and
+the feeder is withheld, the call goes silent and the engine terminates it. Only
+`ja_tocando` (feeder already running) and `sem_sessao` may block capture.
+
+## Leaving for real
+
+`sairDaCall` sends the `<terminate>` **before** tearing the engine down. Killing
+the workers first left the stanza queued, so the call stayed up on the server
+(encerrar that did not end).
 
 ## Usage
 

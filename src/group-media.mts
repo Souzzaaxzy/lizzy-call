@@ -291,11 +291,30 @@ export const setupDaCallFalhou = (data?: string): {
             `grupo=${info.is_group_call}`
         ].join(' ');
 
-        // Falha real: o motor está encerrando a call, ou ela terminou com erro.
+        // Falha real: SO' o motor comecar a derrubar a call.
+        //
+        // ## O defeito MEDIDO (a call caindo de ~3 em ~3 s, com bipes)
+        //
+        // Antes: `falhou = encerrando || (call_state === 0 && call_result !== 0)`.
+        // O segundo termo e' um FALSO POSITIVO: medido, o motor passa por
+        // `state=0 result=4` no ESTADO INICIAL ("ainda nao conectada") e em
+        // transicoes normais -- nao e' erro.
+        //
+        // O estrago da cadeia:
+        //   1. o estado transitorio marcava `callFalhou = true`;
+        //   2. `podeAlimentarCaptura` entao RECUSAVA a captura;
+        //   3. sem alimentar, o bot NAO TRANSMITE MIDIA nenhuma;
+        //   4. o motor encerra a call sozinho por falta de midia -- esta escrito
+        //      no proprio binario:
+        //        "ERROR: No media being transmitted"
+        //        "mvp->enable_media_timeout_terminate_reason"
+        //   5. o bot reabria e o ciclo repetia -> a queda periodica + o bipe.
+        //
+        // A leitura certa e' so' o `call_ending`: e' o unico sinal de que o motor
+        // esta de fato derrubando a call.
         const encerrando = info.call_ending === true;
-        const terminouComErro = info.call_state === 0 && Boolean(info.call_result) && info.call_result !== 0;
-        const falhou = encerrando || terminouComErro;
-        const motivo = encerrando ? 'encerrando' : terminouComErro ? `result=${info.call_result}` : undefined;
+        const falhou = encerrando;
+        const motivo = encerrando ? 'encerrando' : undefined;
 
         return {
             falhou,
@@ -812,10 +831,19 @@ export class GroupCallMedia {
         // no log do bot, que reinicia e derruba a call no meio do comando).
         const { pode, motivo } = podeAlimentarCaptura(media);
         if (!pode) {
-            if (motivo === 'setup_falhou') {
-                this.#log('[CALLP] captura pedida com o setup FALHO — nao vou alimentar audio (a call nao existe no servidor)');
+            // ## O motor PEDINDO captura e' a prova de que a call esta viva
+            //
+            // `startCaptureJS` so' chega quando o motor quer midia DESTE lado. Se
+            // um estado transitorio marcou `callFalhou`, insistir no gate deixava
+            // a call SEM MIDIA -- e o motor derruba a call sem midia transmitida
+            // ("No media being transmitted"). Era a queda ciclica com os bipes.
+            //
+            // Entao: com o motor pedindo captura, alimentamos. So' o `ja_tocando`
+            // (feeder ja ativo) e a ausencia de sessao continuam barrando.
+            if (motivo === 'ja_tocando' || motivo === 'sem_sessao') {
+                return;
             }
-            return;
+            this.#log(`[CALLP] captura pedida com sinal de falha (${motivo}) — alimentando mesmo assim: sem midia o motor encerra a call`);
         }
         this.#startFeeder(media, media.pendingAudioSource ?? 'silence');
     };
@@ -854,7 +882,20 @@ export class GroupCallMedia {
         if (!media) return;
         this.#sessions.delete(grupo);
         try { media.feeder?.stop(); } catch {}
+
+        // 1) SAIR DA CALL PRIMEIRO: o  manda o <terminate>, que e
+        // o que tira este lado da call no SERVIDOR. Sem esperar, o 
+        // logo abaixo matava os workers com o stanza ainda na fila — e a call
+        // ficava de pe (o encerrar nao encerrava de verdade).
         try { media.engine.endCall(0, true); } catch {}
+        // O stanza sai pelo socket; da um instante para ele ser escrito antes de
+        // derrubar a pilha. Curto de proposito: nao segura o comando.
+        await new Promise((r) => setTimeout(r, 300));
+        // 2) Uma segunda vez, por via das duvidas: se o primeiro terminate se
+        // perdeu, este cobre (o motor e idempotente).
+        try { media.engine.endCall(0, true); } catch {}
+        await new Promise((r) => setTimeout(r, 150));
+
         try { media.engine.destroy?.(); } catch {}
         try { media.relay.closeAll?.(); } catch {}
     };
