@@ -151,11 +151,38 @@ export declare const deviceOf: (jid: string | null | undefined) => number;
  */
 export declare const parseRelay: (relayNode: BinaryNode | null) => RelayAllocation | null;
 /**
+ * Os `state` do `<group_info>` que significam **participante presente**.
+ *
+ * ## O defeito MEDIDO (`participantes=3 conectados=1`, `peer_state error=500`)
+ *
+ * A versão anterior aceitava **só** `'connected'`:
+ *
+ *   connected: userAttrs.state === 'connected'
+ *
+ * Mas o `state` do fio **não é** só `connected`. A referência que funciona
+ * (`@zapo-js/voip-media`, `WA_CALL_PARTICIPANT_STATE`) lista os estados de
+ * PRESENÇA:
+ *
+ *   connected, outgoing, receipt, creating, invisible, visible, invited
+ *
+ * e só estes são DEPARTURE: `terminated`, `invalid`, `rejected`, `timedout`,
+ * `cancel_offer`.
+ *
+ * Consequência medida no log do dono: com 3 participantes na call (o bot + o
+ * usuário que entrou), o roster dizia `conectados=1` — o usuário que ENTROU não
+ * contava como presente. O `mediaReady` então nunca satisfazia
+ * `sem_remoto_conectado_com_pid`, a mídia não ficava pronta, e o motor reportava
+ * o peer como **invisível** para o servidor — que responde
+ * `ack de peer_state error=500` e **expulsa** quem estava na call.
+ */
+export declare const WA_CALL_PRESENT_STATES: readonly string[];
+/**
  * Parse the `<group_info>` roster.
  *
- * `state` distinguishes participants who can carry media (`connected`) from
- * those merely invited (`outgoing`, `receipt`). Only connected devices have a
- * `pid`, and the PID — not the JID — is how media is addressed.
+ * `state` diz quem está PRESENTE na call (ver {@link WA_CALL_PRESENT_STATES}) —
+ * não só `connected`. O PID (não o JID) é como a mídia é endereçada, e quem
+ * entrou pode aparecer como `visible`/`outgoing`/`invited` antes de virar
+ * `connected`.
  */
 export declare const parseGroupInfo: (groupInfoNode: BinaryNode | null) => GroupInfo | null;
 /**
