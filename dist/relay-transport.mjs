@@ -8,6 +8,9 @@
  * @author ShellTear
  */
 import { appendFileSync } from "node:fs";
+import dgram from "node:dgram";
+import { isIPv6 } from "node:net";
+import { performance } from "node:perf_hooks";
 const RELAY_PROTO_UDP = 0;
 const FAUX_WEB_CLIENT_RELAY_PORT = 3478;
 const TRUE_WEB_CLIENT_RELAY_PORT = 3480;
@@ -42,7 +45,177 @@ const DISABLE_IPV6 = process.env.CALL_DISABLE_IPV6 !== "0";
  */
 const RELAY_PORT_MODE = process.env.CALL_RELAY_PORT_MODE === "original" ? "original" : "web";
 const USE_ORIGINAL_RELAY_PORTS = RELAY_PORT_MODE === "original";
+/**
+ * ## UDP CRU: a leg sem ICE — o que destrava a call de GRUPO
+ *
+ * ## O defeito MEDIDO (o "conectando..." infinito)
+ *
+ * O transporte desta classe discava TODO relay por `RTCPeerConnection`. Quando o
+ * relay de um call de GRUPO **não traz credencial ICE**, não há ICE a negociar:
+ * o WebRTC fica tentando e a call **nunca sai de "conectando"**.
+ *
+ * A referência que FUNCIONA (`zapo-caller`, marcada `working` pela wacrg) resolve
+ * isso discando esse relay por **UDP cru**: o socket 5-tuple é a identidade da
+ * leg e o relay não pede handshake nenhum.
+ *
+ * Medido no `@zapo-js/voip-media` (que é a mesma arquitetura do zapo):
+ *
+ *   `rawUdpLegs: 'required'`  ->  UDP cru SÓ onde o relay exige
+ *   `rawUdpLegs: 'all'`       ->  TODO relay vira UDP cru (e a leg se fecha
+ *                                 sozinha: "raw udp leg rolled back")
+ *
+ * Aqui o padrão é **`required`**: UDP cru só para o relay que não traz ICE.
+ * `CALL_RAW_UDP=all` força todos; `CALL_RAW_UDP=0` desliga (só WebRTC).
+ */
+const RAW_UDP_MODE = (() => {
+    const v = (process.env.CALL_RAW_UDP ?? "required").toLowerCase();
+    if (v === "0" || v === "off" || v === "false")
+        return "off";
+    if (v === "all")
+        return "all";
+    return "required";
+})();
+/** Quanto tempo uma leg pode enviar antes de exigir mídia de volta, em ms. */
+const RAW_UDP_RETURN_PATH_TIMEOUT_MS = 5000;
+/** Quanto tempo uma leg já confirmada pode ficar sem mídia de volta, em ms. */
+const RAW_UDP_RETURN_PATH_STALL_MS = 10000;
 const RELAY_DTLS_FINGERPRINT = "F9:CA:0C:98:A3:CC:71:D6:42:CE:5A:E2:53:D2:15:20:D3:1B:BA:D8:57:A4:F0:AF:BE:0B:FB:F3:6B:0C:A0:68";
+/**
+ * A leg de mídia por **UDP cru**: sem ICE, sem DTLS, sem SCTP.
+ *
+ * O socket conectado ao relay E' a identidade da leg. Como quem "elege" a leg e'
+ * o ENVIO, ela mesma policia o caminho de volta: se a mídia sai e nada volta, a
+ * leg se fecha em vez de fingir que está de pé (o modo de falha do "conectando").
+ */
+class RawUdpLeg {
+    options;
+    #socket = null;
+    #opened = false;
+    #closed = false;
+    #returnPathTimer = null;
+    #returnPathSeen = false;
+    #lastInboundAt = 0;
+    constructor(options) {
+        this.options = options;
+    }
+    get isOpen() {
+        return this.#opened && !this.#closed;
+    }
+    get hasReturnPath() {
+        return this.#returnPathSeen;
+    }
+    open() {
+        if (this.#socket || this.#closed)
+            return;
+        try {
+            const socket = dgram.createSocket(isIPv6(this.options.ip) ? "udp6" : "udp4");
+            this.#socket = socket;
+            socket.on("message", (msg) => {
+                if (this.#closed)
+                    return;
+                const data = new Uint8Array(msg);
+                if (!isStunPacket(data)) {
+                    this.#lastInboundAt = performance.now();
+                    if (!this.#returnPathSeen) {
+                        this.#returnPathSeen = true;
+                        this.options.onLog?.(`[RELAY] udp cru: caminho de volta CONFIRMADO (${data.length} bytes)`);
+                        if (!this.#returnPathTimer)
+                            this.#armReturnPathTimer(RAW_UDP_RETURN_PATH_STALL_MS);
+                    }
+                }
+                this.options.onMessage(data);
+            });
+            socket.on("error", (err) => {
+                if (this.#closed)
+                    return;
+                this.options.onLog?.(`[RELAY] udp cru: erro no socket — ${err.message}`);
+                this.#fail("raw_udp_socket_error");
+            });
+            // `connect` só reporta falha neste callback, nunca como evento `error`.
+            socket.connect(this.options.port, this.options.ip, (err) => {
+                if (this.#closed)
+                    return;
+                if (err) {
+                    this.options.onLog?.(`[RELAY] udp cru: connect falhou — ${err.message}`);
+                    this.#fail("raw_udp_connect_failed");
+                    return;
+                }
+                this.#opened = true;
+                this.options.onOpen();
+            });
+        }
+        catch (err) {
+            this.options.onLog?.(`[RELAY] udp cru: open falhou — ${err?.message ?? String(err)}`);
+            this.#fail("raw_udp_open_failed");
+        }
+    }
+    /** Escreve um datagrama; a PRIMEIRA mídia (não-STUN) arma a janela de volta. */
+    send(data) {
+        const socket = this.#socket;
+        if (!socket || !this.isOpen)
+            return false;
+        try {
+            socket.send(data);
+        }
+        catch {
+            return false;
+        }
+        if (!this.#returnPathSeen && !this.#returnPathTimer && !isStunPacket(data)) {
+            this.#armReturnPathTimer(RAW_UDP_RETURN_PATH_TIMEOUT_MS);
+        }
+        return true;
+    }
+    close() {
+        if (this.#closed)
+            return;
+        this.#closed = true;
+        this.#opened = false;
+        if (this.#returnPathTimer) {
+            clearTimeout(this.#returnPathTimer);
+            this.#returnPathTimer = null;
+        }
+        const socket = this.#socket;
+        this.#socket = null;
+        if (!socket)
+            return;
+        try {
+            socket.close();
+        }
+        catch {
+            /* nada a fazer */
+        }
+    }
+    #armReturnPathTimer(timeoutMs) {
+        if (this.#returnPathTimer) {
+            clearTimeout(this.#returnPathTimer);
+            this.#returnPathTimer = null;
+        }
+        this.#returnPathTimer = setTimeout(() => {
+            this.#returnPathTimer = null;
+            if (this.#closed)
+                return;
+            const idleMs = performance.now() - this.#lastInboundAt;
+            if (this.#returnPathSeen && idleMs < RAW_UDP_RETURN_PATH_STALL_MS) {
+                this.#armReturnPathTimer(RAW_UDP_RETURN_PATH_STALL_MS - idleMs);
+                return;
+            }
+            this.options.onLog?.("[RELAY] udp cru: leg fechada, nenhuma mídia no caminho de volta");
+            this.#fail("raw_udp_no_return_path");
+        }, timeoutMs);
+    }
+    #fail(reason) {
+        if (this.#closed)
+            return;
+        this.close();
+        this.options.onFailure(reason);
+    }
+}
+/** Um pacote STUN comeca com dois bits zero; a midia (RTP) nunca. */
+const isStunPacket = (data) => {
+    if (data.byteLength < 2)
+        return false;
+    return (data[0] & 0xc0) === 0;
+};
 const getConnectionIdentifier = (ip, port) => ip.includes(":") ? `[${ip}]:${port}` : `${ip}:${port}`;
 const createEmptyStats = () => ({
     sentPackets: 0,
@@ -314,6 +487,18 @@ export class RelayRtcTransport {
             void this.#restartIce(connection);
             return packet.byteLength;
         }
+        // Leg por UDP CRU: o socket e a identidade -- nao ha dataChannel nem ICE.
+        if (connection.rawUdp) {
+            if (connection.rawUdp.isOpen) {
+                if (!this.#enviarPelaLegUdpCru(connection, packet)) {
+                    connection.stats.droppedPackets += 1;
+                }
+                return packet.byteLength;
+            }
+            bufferPacket(connection, arrayBuffer);
+            void this.#ensureConnection(info).catch(() => { });
+            return packet.byteLength;
+        }
         if (connection.state === "open" && connection.dataChannel?.readyState === "open") {
             if (!this.#sendBufferedPacket(connection, arrayBuffer)) {
                 connection.stats.droppedPackets += 1;
@@ -350,6 +535,7 @@ export class RelayRtcTransport {
             lastIceRttMs: null, hasReceivedFirstPacket: false,
             hasNonStunPacketSent: false, sentMedia: false, lastRxPacketTime: 0,
             isReconnecting: false, stats: createEmptyStats(),
+            rawUdp: null,
         };
         this.#connections.set(info.id, created);
         return created;
@@ -372,12 +558,26 @@ export class RelayRtcTransport {
             hasReceivedFirstPacket: false, hasNonStunPacketSent: false,
             sentMedia: false, lastRxPacketTime: 0, isReconnecting: false,
             stats: createEmptyStats(),
+            rawUdp: null,
         };
         this.#connections.set(id, created);
         return created;
     };
+    /**
+     * Disca a leg: por **UDP cru** quando o relay nao traz ICE, senao por WebRTC.
+     *
+     * Esta e a correcao do "conectando..." infinito. O zapo classifica o endpoint
+     * exatamente assim (`group-media-plan.js`):
+     *
+     *   `endpoint.authToken ? undefined : 'raw-udp'`
+     *
+     * ou seja, **sem `authToken` o relay SO funciona por UDP cru**. Discar esse
+     * relay por `RTCPeerConnection` e o que travava: nao ha ICE a negociar.
+     */
     #ensureConnection = async (info) => {
         const connection = this.#getOrCreateConnection(info);
+        if (this.#deveUsarUdpCru(info))
+            return this.#abrirLegUdpCru(connection);
         if (connection.state === "open" || connection.state === "connecting") {
             return connection.connectPromise ?? Promise.resolve();
         }
@@ -389,6 +589,80 @@ export class RelayRtcTransport {
         finally {
             connection.connectPromise = null;
         }
+    };
+    /**
+     * Este relay deve ser discado por UDP cru?
+     *
+     * Espelha a classificacao do zapo (`rawUdpLegs: 'required'` por padrao):
+     *  - `required` (padrao): so o relay **sem `authToken`** (o que nao tem ICE);
+     *  - `all`: todos;  `off`: nenhum (so WebRTC).
+     */
+    #deveUsarUdpCru(info) {
+        if (RAW_UDP_MODE === "off")
+            return false;
+        if (RAW_UDP_MODE === "all")
+            return true;
+        // Sem `authToken` nao ha credencial ICE: e o caso que travava.
+        return !info.authToken;
+    }
+    /** Abre (ou reaproveita) a leg por UDP cru. */
+    #abrirLegUdpCru = (connection) => {
+        if (connection.state === "open" && connection.rawUdp?.isOpen) {
+            return connection.connectPromise ?? Promise.resolve();
+        }
+        if (connection.connectPromise)
+            return connection.connectPromise;
+        this.config.onStage?.("transporte_iniciando", {
+            relayName: connection.info.name,
+            ip: connection.info.ip,
+            port: connection.info.originalPort,
+        });
+        const promise = new Promise((resolve, reject) => {
+            const leg = new RawUdpLeg({
+                ip: connection.info.ip,
+                // A leg UDP cru usa a porta ANUNCIADA: e a que o relay escuta para midia.
+                port: connection.info.originalPort ?? connection.info.port,
+                onLog: (msg) => console.log(msg),
+                onMessage: (data) => {
+                    connection.stats.receivedPackets += 1;
+                    connection.stats.receivedBytes += data.byteLength;
+                    connection.hasReceivedFirstPacket = true;
+                    connection.lastRxPacketTime = Date.now();
+                    this.#totals.receivedPackets += 1;
+                    this.#totals.receivedBytes += data.byteLength;
+                    appendRelayPacketLog("recv", connection, data);
+                    this.config.onTransportMessage(data, connection.info.ip, getVoipStackPort(connection.info));
+                },
+                onOpen: () => {
+                    connection.state = "open";
+                    this.config.onStage?.("conexao_aberta", {
+                        relayName: connection.info.name,
+                        ip: connection.info.ip,
+                        port: connection.info.originalPort,
+                    });
+                    this.#flushBufferedPackets(connection);
+                    resolve();
+                },
+                onFailure: (reason) => {
+                    connection.state = "failed";
+                    connection.rawUdp = null;
+                    this.config.onStage?.("conexao_falhou", {
+                        relayName: connection.info.name,
+                        ip: connection.info.ip,
+                        port: connection.info.originalPort,
+                        state: reason,
+                    });
+                    reject(new Error(reason));
+                },
+            });
+            connection.rawUdp = leg;
+            connection.state = "connecting";
+            leg.open();
+        }).finally(() => {
+            connection.connectPromise = null;
+        });
+        connection.connectPromise = promise;
+        return promise;
     };
     #connect = async (connection) => {
         const wrtcModule = await this.#loadWrtc();
@@ -546,17 +820,58 @@ export class RelayRtcTransport {
         this.config.onTransportMessage(packet, connection.info.ip, getVoipStackPort(connection.info));
     };
     #flushBufferedPackets = (connection) => {
-        while (connection.state === "open" &&
-            connection.dataChannel?.readyState === "open" &&
-            connection.packetBuffer.length > 0) {
+        while (connection.packetBuffer.length > 0) {
             const packet = shiftPacket(connection);
             if (!packet)
+                break;
+            // Leg UDP cru: sem dataChannel; o socket manda direto.
+            if (connection.rawUdp) {
+                if (!connection.rawUdp.isOpen)
+                    break;
+                if (!this.#enviarPelaLegUdpCru(connection, new Uint8Array(packet))) {
+                    connection.stats.droppedPackets += 1;
+                    break;
+                }
+                continue;
+            }
+            if (connection.state !== "open" || connection.dataChannel?.readyState !== "open")
                 break;
             if (!this.#sendBufferedPacket(connection, packet)) {
                 connection.stats.droppedPackets += 1;
                 break;
             }
         }
+    };
+    /** Manda um pacote pela leg UDP cru, com a mesma contabilidade/estagios do WebRTC. */
+    #enviarPelaLegUdpCru = (connection, packet) => {
+        if (!connection.rawUdp?.send(packet))
+            return false;
+        const tipo = classifyRelayPacket(toArrayBuffer(packet));
+        if (tipo === "non_stun") {
+            const primeira = !connection.sentMedia;
+            connection.hasNonStunPacketSent = true;
+            connection.sentMedia = true;
+            if (primeira) {
+                this.config.onStage?.("midia_enviada", {
+                    relayName: connection.info.name,
+                    ip: connection.info.ip,
+                    port: connection.info.originalPort,
+                });
+            }
+        }
+        else if (tipo === "stun_alloc") {
+            this.config.onStage?.("stun_alloc_visto", {
+                relayName: connection.info.name,
+                ip: connection.info.ip,
+                port: connection.info.originalPort,
+            });
+        }
+        connection.stats.sentPackets += 1;
+        connection.stats.sentBytes += packet.byteLength;
+        this.#totals.sentPackets += 1;
+        this.#totals.sentBytes += packet.byteLength;
+        appendRelayPacketLog("send", connection, packet);
+        return true;
     };
     #sendBufferedPacket = (connection, packet) => {
         try {
@@ -667,6 +982,12 @@ export class RelayRtcTransport {
     };
     #closePeerObjects = (connection) => {
         this.#stopIceRttPolling(connection);
+        // Leg UDP cru: fecha o socket (idempotente, nunca lanca).
+        try {
+            connection.rawUdp?.close();
+        }
+        catch { }
+        connection.rawUdp = null;
         try {
             connection.dataChannel?.close?.();
         }

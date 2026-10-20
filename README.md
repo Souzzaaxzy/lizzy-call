@@ -52,6 +52,35 @@ Plus one shared **key epoch** per `enc_rekey`. `group-bridge.mts` parses all of
 it and `mediaReady()` gates playback on all three, so the caller is told the
 truth instead of getting a call that looks up but carries nothing.
 
+## Raw UDP legs (the relay with no ICE)
+
+A group-call relay often arrives **without an ICE credential**. The reference
+that works (`zapo-caller`, marked `working` by the wacrg) classifies it exactly
+like this (`group-media-plan.js`):
+
+```js
+endpoint.authToken ? undefined : 'raw-udp'
+```
+
+— i.e. **a relay with no `authToken` only works over raw UDP**. Dialing that
+relay through an `RTCPeerConnection` has no ICE to negotiate: the call sits on
+connecting forever, with nothing arriving. That was the defect.
+
+The transport now opens a **raw UDP leg** for those relays (a connected
+`node:dgram` socket — the 5-tuple *is* the leg, no ICE/DTLS/SCTP), mirroring
+`rawUdpLegs: 'required'`:
+
+| `CALL_RAW_UDP` | behavior |
+| --- | --- |
+| `required` (default) | raw UDP **only** for the relay with no `authToken` |
+| `all` | every relay goes raw UDP |
+| `0` / `off` | raw UDP disabled (WebRTC only) |
+
+Because sending is what elects a raw leg, it **polices its own return path**: if
+media goes out and none comes back, the leg closes (`raw_udp_no_return_path`)
+instead of pretending the call is up. The leg uses the relay's **advertised
+port** (a raw leg keeps the advertised one; only WebRTC legs move to 3480).
+
 ## Usage
 
 ```js
