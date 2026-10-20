@@ -266,12 +266,16 @@ export declare const applyGroupUpdate: (session: GroupSession, update: ParsedGro
     transactionId?: undefined;
     participants?: undefined;
     connected?: undefined;
+    devicesComPid?: undefined;
+    remotosConectados?: undefined;
     readiness?: undefined;
 } | {
     applied: boolean;
     transactionId: number | undefined;
     participants: number;
     connected: number;
+    devicesComPid: number;
+    remotosConectados: number;
     readiness: {
         ready: boolean;
         reason?: string;

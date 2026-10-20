@@ -569,7 +569,7 @@ export class GroupCallMedia {
                     return;
                 const readiness = result.readiness ?? { ready: false, reason: 'indefinido' };
                 media.lastReadinessReason = readiness.reason;
-                this.#log(`[CALLP] roster tx=${result.transactionId} participantes=${result.participants} conectados=${result.connected} midia=${readiness.ready}`);
+                this.#log(`[CALLP] roster tx=${result.transactionId} participantes=${result.participants} conectados=${result.connected} remotos=${result.remotosConectados} devicesComPid=${result.devicesComPid} midia=${readiness.ready}`);
                 if (readiness.ready) {
                     media.stage = 'pronta';
                     for (const waiter of media.readyWaiters)

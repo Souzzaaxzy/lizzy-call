@@ -333,11 +333,28 @@ export const applyGroupUpdate = (session, update, selfJid) => {
         hasKeyEpoch: Boolean(session.keyEpoch),
         selfJid
     });
+    // ## Diagnostico do PID (o que a midia exige)
+    //
+    // `mediaReady` exige um REMOTO conectado cujo DEVICE tenha `pid`. Medido: o
+    // log dizia `conectados=3` e ainda `sem_remoto_conectado_com_pid` -- ou seja,
+    // o que falta e' o PID, nao a presenca. Estes numeros dizem qual dos dois e':
+    //
+    //   devicesComPid=0  -> o roster nao trouxe `pid` nos `<device>` (o servidor
+    //                       so o manda depois que a midia daquele lado sobe);
+    //   remotosConectados=0 -> ninguem alem do bot esta' presente.
+    const users = session.groupInfo.users;
+    const selfBareDiag = bareJid(selfJid);
+    const devicesComPid = users
+        .filter((u) => u.bare !== selfBareDiag)
+        .reduce((n, u) => n + u.devices.filter((d) => Number.isFinite(d.pid)).length, 0);
+    const remotosConectados = users.filter((u) => u.connected && u.bare !== selfBareDiag).length;
     return {
         applied: true,
         transactionId: next,
         participants: session.groupInfo.users.length,
-        connected: session.groupInfo.users.filter((u) => u.connected).length,
+        connected: users.filter((u) => u.connected).length,
+        devicesComPid,
+        remotosConectados,
         readiness
     };
 };
