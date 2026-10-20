@@ -83,48 +83,41 @@ const RAW_UDP_RETURN_PATH_TIMEOUT_MS = 5000;
 /** Quanto tempo uma leg já confirmada pode ficar sem mídia de volta, em ms. */
 const RAW_UDP_RETURN_PATH_STALL_MS = 10000;
 /**
- * Quantas re-dials RÁPIDAS (com backoff) antes de espaçar as tentativas.
+ * ## A recuperação da leg UDP cru: a PORTA DE FALLBACK (uma vez)
  *
- * ## O defeito MEDIDO (a call caindo de ~5 em ~5 segundos)
+ * ## O que a referência faz (medido em `@zapo-js/voip-media`)
  *
- * O relay de um call de GRUPO frequentemente NÃO devolve mídia enquanto o outro
- * lado não entra — **e o bot costuma ficar sozinho no chat de voz**, então "sem
- * mídia de volta" é o estado NORMAL, não uma falha.
+ * Um relay tem DUAS portas: a anunciada e a do cliente Web (3480). A referência
+ * guarda a outra em `fallbackPort` e, quando a leg **nunca recebeu um pacote**,
+ * re-diala **na outra porta** — uma vez só (`registerOnFallbackPort` devolve a
+ * leg já sem fallback):
  *
- * A primeira versão tratava isso como falha terminal: fechava a leg e derrubava
- * a call. O motor então reabria, o relay voltava a não responder, e o ciclo se
- * repetia — a queda periódica com o bipe de entrada/saída.
+ *   if (port === undefined || conn.hasReceivedFirstPacket) return null;
+ *   const relayInfo = { ...conn.relayInfo, port, fallbackPort: undefined };
  *
- * ## O que a referência que funciona faz (e o que ela NÃO faz)
+ * E, importante: o watchdog de downlink **pula as legs RAW** —
  *
- * `@zapo-js/voip-media` **re-diala** a leg parada (`redialStalledLegs`) com
- * backoff e um teto — e, ao esgotar, **apenas PARA de re-dialar**. Ele **nunca**
- * marca a leg como falha por causa disso, e a call **não cai**:
+ *   if (conn.rawLeg || conn.relayInfo.transport === 'raw-udp') continue;
  *
- *   if (this.redials >= DOWNLINK_MAX_REDIALS) return;   // <- so' retorna
+ * com o comentário *"Raw legs police their own return path"*. Ou seja: a
+ * referência **NÃO re-diala** a leg UDP cru em loop. A tentativa de fallback é
+ * a ÚNICA recuperação, e depois dela a leg fica quieta.
+ *
+ * ## O defeito MEDIDO (os bipes + a call caindo)
+ *
+ * Eu tinha implementado **re-dial infinito** — ideia minha, não da referência.
+ * Isso fechava e reabria o socket a cada ~5 s, e o motor via o caminho de mídia
+ * cair junto: o resultado era o "bip bip" de reconexão e, na sequência, a call
+ * sendo derrubada. A recuperação certa é a de UMA tentativa na outra porta.
  *
  * ## A regra que fica
  *
- * Depois das re-dials rápidas, a leg **continua viva** e passa a re-dialar em
- * intervalo LONGO — para sempre. Ela só falha por erro REAL de socket (que aí
- * não há o que fazer). Sem isso, desistir da leg = tirar o caminho de mídia = o
- * motor encerra a call (`media_timeout_terminate`).
- *
- * `0` desliga a re-dial (só o comportamento antigo, para comparar em teste).
+ *   1. sem caminho de volta e sem nunca ter recebido pacote -> re-diala na
+ *      **outra porta** (uma vez);
+ *   2. ainda sem caminho de volta -> a leg fica **quieta e viva** (sem churn);
+ *   3. erro real de socket -> falha (aí não há o que fazer).
  */
-const RAW_UDP_MAX_REDIALS = (() => {
-  const n = Number(process.env.CALL_RAW_UDP_MAX_REDIALS ?? "4");
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
-})();
-/** Backoff base da re-dial, em ms (dobra a cada tentativa). */
-const RAW_UDP_REDIAL_BASE_MS = 1000;
-/**
- * Intervalo das re-dials depois de esgotar as rápidas, em ms.
- *
- * A leg NÃO desiste: ela segue viva e tentando. Desistir seria remover o caminho
- * de mídia e fazer o motor encerrar a call — exatamente a queda periódica.
- */
-const RAW_UDP_REDIAL_LONGO_MS = 30000;
+const RAW_UDP_FALLBACK_ENABLED = process.env.CALL_RAW_UDP_FALLBACK !== "0";
 
 const RELAY_DTLS_FINGERPRINT =
   "F9:CA:0C:98:A3:CC:71:D6:42:CE:5A:E2:53:D2:15:20:D3:1B:BA:D8:57:A4:F0:AF:BE:0B:FB:F3:6B:0C:A0:68";
@@ -205,21 +198,35 @@ class RawUdpLeg {
   #returnPathTimer: NodeJS.Timeout | null = null;
   #returnPathSeen = false;
   #lastInboundAt = 0;
-  #redials = 0;
+  /** A porta em uso agora (muda uma vez, na tentativa de fallback). */
+  #portaAtual: number;
+  /** Já tentou a outra porta? (uma vez só, como a referência) */
+  #tentouFallback = false;
+  /** Quantos pacotes chegaram do relay (a referência usa isso para o fallback). */
+  #recebeuAlgumPacote = false;
 
   constructor(
     private readonly options: {
       ip: string;
       port: number;
+      /** A outra porta do relay (anunciada <-> 3480). Recuperação de UMA tentativa. */
+      fallbackPort?: number;
       onMessage: (data: Uint8Array) => void;
       onOpen: () => void;
       onFailure: (reason: string) => void;
       onLog?: (msg: string) => void;
     }
-  ) {}
+  ) {
+    this.#portaAtual = options.port;
+  }
 
   get isOpen(): boolean {
     return this.#opened && !this.#closed;
+  }
+
+  /** A porta em uso agora (diagnóstico). */
+  get portaAtual(): number {
+    return this.#portaAtual;
   }
 
   get hasReturnPath(): boolean {
@@ -234,6 +241,9 @@ class RawUdpLeg {
       socket.on("message", (msg: Buffer) => {
         if (this.#closed) return;
         const data = new Uint8Array(msg);
+        // Qualquer pacote (STUN ou mídia) prova que ESTA porta responde: é o
+        // sinal que a referência usa para NÃO tentar o fallback.
+        this.#recebeuAlgumPacote = true;
         if (!isStunPacket(data)) {
           this.#lastInboundAt = performance.now();
           if (!this.#returnPathSeen) {
@@ -252,7 +262,7 @@ class RawUdpLeg {
         this.#fail("raw_udp_socket_error");
       });
       // `connect` só reporta falha neste callback, nunca como evento `error`.
-      socket.connect(this.options.port, this.options.ip, (err?: Error | null) => {
+      socket.connect(this.#portaAtual, this.options.ip, (err?: Error | null) => {
         if (this.#closed) return;
         if (err) {
           this.options.onLog?.(`[RELAY] udp cru: connect falhou — ${err.message}`);
@@ -285,9 +295,9 @@ class RawUdpLeg {
     return true;
   }
 
-  /** Tentativas de re-dial já feitas (diagnóstico). */
-  get redials(): number {
-    return this.#redials;
+  /** Já tentou a outra porta? (diagnóstico) */
+  get tentouFallback(): boolean {
+    return this.#tentouFallback;
   }
 
   /**
@@ -343,29 +353,42 @@ class RawUdpLeg {
         this.#armReturnPathTimer(RAW_UDP_RETURN_PATH_STALL_MS - idleMs);
         return;
       }
-      // RE-DIAL — e NUNCA falhar por isto.
+      // ## A recuperação: UMA tentativa na OUTRA porta — e depois quieto
       //
-      // O bot costuma ficar SOZINHO no chat de voz: "sem mídia de volta" e' o
-      // estado NORMAL. Fechar a leg aqui tirava o caminho de midia e o motor
-      // encerrava a call (a queda periodica com os bipes).
+      // O bot costuma ficar SOZINHO no chat de voz, e nesse caso "sem mídia de
+      // volta" e' o estado NORMAL. Re-dialar em loop (o que eu fiz antes) fechava
+      // e reabria o socket a cada ~5 s; o motor via o caminho cair junto e o
+      // resultado era o "bip bip" de reconexao e a call sendo derrubada.
       //
-      // A referencia (`@zapo-js/voip-media`) re-diala com backoff e, ao esgotar o
-      // teto, **apenas para de re-dialar** — a call segue de pe. Aqui e' igual,
-      // com a diferenca de que as re-dials continuam em intervalo LONGO: a leg
-      // so morre por erro real de socket.
-      this.#redials += 1;
-      const rapida = this.#redials <= RAW_UDP_MAX_REDIALS;
-      const espera = rapida
-        ? RAW_UDP_REDIAL_BASE_MS * 2 ** (this.#redials - 1)
-        : RAW_UDP_REDIAL_LONGO_MS;
-      this.options.onLog?.(
-        `[RELAY] udp cru: sem mídia de volta — re-dial ${this.#redials}` +
-        `${rapida ? `/${RAW_UDP_MAX_REDIALS}` : ' (intervalo longo)'} em ${espera} ms`
-      );
-      setTimeout(() => {
-        if (this.#closed) return;
+      // A referencia (`@zapo-js/voip-media`) NAO re-diala a leg UDP cru: o
+      // watchdog de downlink pula `conn.relayInfo.transport === 'raw-udp'`
+      // ("raw legs police their own return path"). A UNICA recuperacao e o
+      // `registerOnFallbackPort`: se a leg nunca recebeu pacote, re-diala na
+      // OUTRA porta (anunciada <-> 3480), uma vez.
+      const outraPorta = this.options.fallbackPort;
+      const podeFallback =
+        RAW_UDP_FALLBACK_ENABLED &&
+        !this.#tentouFallback &&
+        !this.#recebeuAlgumPacote &&
+        typeof outraPorta === 'number' &&
+        outraPorta > 0 &&
+        outraPorta !== this.#portaAtual;
+
+      if (podeFallback) {
+        this.#tentouFallback = true;
+        this.#portaAtual = outraPorta!;
+        this.options.onLog?.(
+          `[RELAY] udp cru: sem resposta — tentando a outra porta (${outraPorta})`
+        );
         this.#reabrir();
-      }, espera).unref?.();
+        return;
+      }
+
+      // Sem fallback a fazer: a leg fica VIVA e quieta. Nao se fecha, nao se
+      // re-diala — fechar tiraria o caminho de midia e o motor encerraria a call.
+      this.options.onLog?.(
+        '[RELAY] udp cru: sem mídia de volta — mantendo a leg viva (o bot costuma estar sozinho na call)'
+      );
     }, timeoutMs);
   }
 
@@ -872,6 +895,11 @@ export class RelayRtcTransport {
         ip: connection.info.ip,
         // A leg UDP cru usa a porta ANUNCIADA: e a que o relay escuta para midia.
         port: connection.info.originalPort ?? connection.info.port,
+        // A OUTRA porta do relay: a unica recuperacao de uma leg UDP cru
+        // (a referencia faz o mesmo em `registerOnFallbackPort`).
+        fallbackPort: (connection.info.originalPort ?? connection.info.port) === TRUE_WEB_CLIENT_RELAY_PORT
+          ? FAUX_WEB_CLIENT_RELAY_PORT
+          : TRUE_WEB_CLIENT_RELAY_PORT,
         onLog: (msg) => console.log(msg),
         onMessage: (data) => {
           connection.stats.receivedPackets += 1;
