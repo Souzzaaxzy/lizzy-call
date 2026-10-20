@@ -295,7 +295,24 @@ export const parseGroupInfo = (groupInfoNode: BinaryNode | null): GroupInfo | nu
     if (!groupInfoNode) return null;
     const attrs = groupInfoNode.attrs || {};
 
-    const users = childrenByTag(groupInfoNode, 'user').map((userNode) => {
+    // ## O roster pode vir como `<user>` OU como `<participant>`
+    //
+    // Medido na referência (`@zapo-js/voip-media`, `parseGroupInfoNode`):
+    //
+    //   const userNodes = getNodeChildrenByTag(node, 'user');
+    //   const participantNodes = getNodeChildrenByTag(node, 'participant');
+    //   const listed = userNodes.length > 0 ? userNodes : participantNodes;
+    //
+    // A especificação do `<group_info>` usa `<user>` no roster INICIAL e
+    // `<participant>` nos `group_update` seguintes — e o servidor recusa os dois
+    // juntos. Ler só `<user>` fazia um `group_update` em `<participant>` virar
+    // roster VAZIO: sem participante, sem device e sem `pid` — e a mídia nunca
+    // ficava pronta (`sem_remoto_conectado_com_pid`).
+    const nosDeRoster = childrenByTag(groupInfoNode, 'user');
+    const nosParticipante = childrenByTag(groupInfoNode, 'participant');
+    const usuarios = nosDeRoster.length > 0 ? nosDeRoster : nosParticipante;
+
+    const users = usuarios.map((userNode) => {
         const userAttrs = userNode.attrs || {};
         const jid = userAttrs.jid ?? null;
         const devices = childrenByTag(userNode, 'device').map((deviceNode) => {
